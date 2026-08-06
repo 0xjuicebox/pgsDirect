@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, View, Platform, Dimensions } from 'react-native';
 import { Tabs } from 'expo-router';
-import { LayoutDashboard, Users, UserCheck, Receipt } from 'lucide-react-native';
+import { LayoutDashboard, UserCheck, Route as RouteIcon, Truck, Receipt } from 'lucide-react-native';
 
 const { width } = Dimensions.get('window');
 
@@ -36,21 +36,10 @@ const AnimatedTabIcon = ({ focused, IconComponent, label }: any) => {
   return (
     <View style={styles.tabContainer}>
       <Animated.View style={{ transform: [{ translateY }], alignItems: 'center' }}>
-        <IconComponent
-          color={focused ? COLORS.active : COLORS.inactive}
-          size={22}
-          strokeWidth={focused ? 2.5 : 2}
-        />
-        <Animated.View
-          style={[
-            styles.activeDot,
-            { transform: [{ scale: indicatorScale }], opacity: indicatorScale },
-          ]}
-        />
+        <IconComponent color={focused ? COLORS.active : COLORS.inactive} size={22} strokeWidth={focused ? 2.5 : 2} />
+        <Animated.View style={[styles.activeDot, { transform: [{ scale: indicatorScale }], opacity: indicatorScale }]} />
       </Animated.View>
-      <Animated.Text style={[styles.customLabel, { opacity: labelOpacity }]}>
-        {label}
-      </Animated.Text>
+      <Animated.Text style={[styles.customLabel, { opacity: labelOpacity }]}>{label}</Animated.Text>
     </View>
   );
 };
@@ -62,7 +51,6 @@ export default function AdminTabLayout() {
         headerShown: false,
         tabBarShowLabel: false,
         tabBarStyle: styles.floatingDock,
-        // Hide the tab bar when the keyboard is open so it doesn't block inputs
         tabBarHideOnKeyboard: true,
       }}
     >
@@ -73,9 +61,6 @@ export default function AdminTabLayout() {
           tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={LayoutDashboard} label="Live" />,
         }}
       />
-
-      {/* 🚀 CRITICAL FIX: We only point to the "customers" folder.
-          Expo will automatically look inside that folder for a _layout.tsx (Stack) */}
       <Tabs.Screen
         name="customers"
         options={{
@@ -83,12 +68,18 @@ export default function AdminTabLayout() {
           tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={UserCheck} label="Customers" />,
         }}
       />
-
+      <Tabs.Screen
+        name="routes"
+        options={{
+          title: 'Routes',
+          tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={RouteIcon} label="Routes" />,
+        }}
+      />
       <Tabs.Screen
         name="drivers"
         options={{
-          title: 'Fleet',
-          tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={Users} label="Fleet" />,
+          title: 'Drivers',
+          tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={Truck} label="Drivers" />,
         }}
       />
       <Tabs.Screen
