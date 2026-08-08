@@ -3,27 +3,29 @@ import {
   View,
   Text,
   ScrollView,
-  TouchableOpacity,
   Platform,
   ActivityIndicator,
   RefreshControl,
   Modal,
   Pressable,
-  Alert
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter, useFocusEffect } from 'expo-router';
 import {
   Users,
-  Route as RouteIcon,
+  UserCheck,
   AlertCircle,
-  TrendingUp,
   ChevronRight,
   Bell,
   X,
   CheckCircle2,
   Phone,
   MapPin,
-  Clock
+  Clock,
+  Truck,
+  IndianRupee,
+  PackageCheck,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
@@ -42,27 +44,118 @@ type FlaggedDelivery = {
   updatedAt: string;
 };
 
-// Reusable Metric Card
-const StatCard = ({ title, value, icon: Icon, trend, colorClass, iconColor }: any) => (
-  <View
-    className="flex-1 bg-white rounded-[24px] p-5 border border-slate-200"
+// Mirrors stats.AdminStats on the Go side.
+type AdminStats = {
+  date: string;
+  activeDrivers: number;
+  totalDrivers: number;
+  runsTotal: number;
+  runsInProgress: number;
+  runsCompleted: number;
+  stopsExpected: number;
+  stopsDelivered: number;
+  completionPct: number;
+  pendingApprovals: number;
+  flaggedCount: number;
+  activeCustomers: number;
+  monthRevenue: number;
+  monthLabel: string;
+};
+
+// --- HELPERS ---
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning,';
+  if (h < 17) return 'Good afternoon,';
+  return 'Good evening,';
+}
+
+function rupees(n: number) {
+  if (n >= 100000) return '₹' + (n / 100000).toFixed(1) + 'L';
+  if (n >= 1000) return '₹' + (n / 1000).toFixed(1) + 'k';
+  return '₹' + Math.round(n);
+}
+
+// --- COMPONENTS ---
+
+// A stat that navigates. Every number on this screen should be a door to the
+// screen that explains it — a dashboard you can't drill into is decoration.
+const StatCard = ({ label, value, sub, icon: Icon, iconColor, iconBg, onPress }: any) => (
+  <Pressable
+    onPress={onPress}
+    className="flex-1 bg-white rounded-[24px] p-4 border border-slate-200 active:bg-slate-50"
     style={Platform.OS === 'android' ? { elevation: 2 } : { shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8 }}
   >
-    <View className="flex-row justify-between items-center mb-4">
-      <Icon color={iconColor} size={22} strokeWidth={2} />
-      <View className="flex-row items-center bg-slate-50 px-2 py-1 rounded-xl">
-        <TrendingUp color="#0F172A" size={14} strokeWidth={2.5} />
-        <Text className="text-xs font-bold text-slate-900 ml-1">{trend}</Text>
+    <View className="flex-row justify-between items-start mb-3">
+      <View className={`w-10 h-10 rounded-2xl items-center justify-center ${iconBg}`}>
+        <Icon color={iconColor} size={20} strokeWidth={2.2} />
       </View>
+      <ChevronRight color="#CBD5E1" size={16} />
     </View>
-    <View className="gap-1">
-      <Text className={`text-3xl font-black tracking-tight ${colorClass}`}>{value}</Text>
-      <Text className="text-xs font-bold text-slate-500">{title}</Text>
-    </View>
-  </View>
+    <Text className="text-2xl font-black text-slate-900 tracking-tight">{value}</Text>
+    <Text className="text-xs font-bold text-slate-500 mt-0.5">{label}</Text>
+    {sub ? <Text className="text-[11px] font-medium text-slate-400 mt-1">{sub}</Text> : null}
+  </Pressable>
 );
 
+// Today's shift progress. This is the number an operations person actually
+// opens the app to see, so it gets the most visual weight on the screen.
+const ProgressHero = ({ stats }: { stats: AdminStats }) => {
+  const pct = Math.min(100, Math.max(0, stats.completionPct));
+  const nothingDue = stats.stopsExpected === 0;
+
+  return (
+    <View
+      className="bg-slate-900 rounded-[28px] p-6 mb-4"
+      style={
+        Platform.OS === 'android'
+          ? { elevation: 6 }
+          : { shadowColor: '#0F172A', shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 8 } }
+      }
+    >
+      <View className="flex-row justify-between items-center mb-1">
+        <Text className="text-slate-400 text-xs font-bold uppercase tracking-widest">Today's Progress</Text>
+        <View className="flex-row items-center gap-1.5">
+          <View className={`w-2 h-2 rounded-full ${stats.runsInProgress > 0 ? 'bg-green-400' : 'bg-slate-600'}`} />
+          <Text className="text-slate-400 text-[11px] font-bold">
+            {stats.runsInProgress > 0 ? `${stats.runsInProgress} running` : 'Idle'}
+          </Text>
+        </View>
+      </View>
+
+      {nothingDue ? (
+        <Text className="text-slate-300 font-semibold text-base mt-3">No deliveries scheduled today.</Text>
+      ) : (
+        <>
+          <View className="flex-row items-end gap-2 mt-2 mb-4">
+            <Text className="text-white text-5xl font-black tracking-tighter">{pct}%</Text>
+            <Text className="text-slate-400 font-bold text-sm mb-2">
+              {stats.stopsDelivered} of {stats.stopsExpected} stops
+            </Text>
+          </View>
+
+          <View className="h-2.5 bg-slate-700/60 rounded-full overflow-hidden">
+            <View className="h-full bg-green-400 rounded-full" style={{ width: `${pct}%` }} />
+          </View>
+
+          <View className="flex-row justify-between mt-4">
+            <Text className="text-slate-400 text-xs font-semibold">
+              {stats.runsCompleted}/{stats.runsTotal} runs complete
+            </Text>
+            <Text className="text-slate-400 text-xs font-semibold">
+              {stats.stopsExpected - stats.stopsDelivered} remaining
+            </Text>
+          </View>
+        </>
+      )}
+    </View>
+  );
+};
+
 export default function AdminDashboard() {
+  const router = useRouter();
+
+  const [stats, setStats] = useState<AdminStats | null>(null);
   const [flaggedIssues, setFlaggedIssues] = useState<FlaggedDelivery[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -73,21 +166,33 @@ export default function AdminDashboard() {
   const [resolving, setResolving] = useState(false);
 
   const fetchDashboardData = useCallback(async () => {
-    try {
-      // Fetch flagged deliveries requiring admin attention
-      const issues = await api.get('/delivery/flagged?limit=10');
-      setFlaggedIssues(issues || []);
-    } catch (err: any) {
-      console.log('Failed to fetch dashboard data:', err.message);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    // allSettled, not all — one endpoint failing shouldn't blank the whole screen.
+    const [statsRes, issuesRes] = await Promise.allSettled([
+      api.get('/admin/stats'),
+      api.get('/delivery/flagged?limit=10'),
+    ]);
+
+    if (statsRes.status === 'fulfilled') setStats(statsRes.value);
+    else console.log('Stats failed:', statsRes.reason?.message);
+
+    if (issuesRes.status === 'fulfilled') setFlaggedIssues(issuesRes.value || []);
+    else console.log('Flagged failed:', issuesRes.reason?.message);
+
+    setLoading(false);
+    setRefreshing(false);
   }, []);
 
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  // Approving a customer on another tab should be reflected when you come
+  // back here, so refetch on focus rather than only on mount.
+  useFocusEffect(
+    useCallback(() => {
+      fetchDashboardData();
+    }, [fetchDashboardData])
+  );
 
   const handleResolveIssue = async () => {
     if (!selectedIssue) return;
@@ -96,7 +201,7 @@ export default function AdminDashboard() {
       await api.post(`/delivery/${selectedIssue.id}/resolve`, {});
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowResolveModal(false);
-      fetchDashboardData(); // Refresh the list
+      fetchDashboardData();
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to resolve issue');
     } finally {
@@ -110,85 +215,169 @@ export default function AdminDashboard() {
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
+  const go = (path: string) => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(path as any);
+  };
+
   return (
     <View className="flex-1 bg-slate-50">
       <SafeAreaView className="flex-1" edges={['top', 'left', 'right']}>
-
         <ScrollView
           contentContainerStyle={{ paddingBottom: 120 }}
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchDashboardData(); }} tintColor="#0F172A" />}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={() => {
+                setRefreshing(true);
+                fetchDashboardData();
+              }}
+              tintColor="#0F172A"
+            />
+          }
         >
-          {/* Header Section */}
-          <View className="flex-row justify-between items-center px-6 pt-5 pb-6">
+          {/* Header */}
+          <View className="flex-row justify-between items-center px-6 pt-5 pb-5">
             <View>
-              <Text className="text-base font-medium text-slate-500 tracking-wide">Good morning,</Text>
+              <Text className="text-base font-medium text-slate-500 tracking-wide">{greeting()}</Text>
               <Text className="text-3xl font-black text-slate-900 tracking-tighter mt-1">Admin</Text>
             </View>
-            <TouchableOpacity className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200">
+            <Pressable
+              onPress={() => go('/admin/customers')}
+              className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
+            >
               <Bell color="#0F172A" size={24} strokeWidth={2} />
-              {flaggedIssues.length > 0 && (
+              {(flaggedIssues.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
                 <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
               )}
-            </TouchableOpacity>
+            </Pressable>
           </View>
 
-          {/* Top Level Metrics Grid (Mocked for now) */}
-          <View className="flex-row px-5 gap-4 mb-8">
-            <StatCard
-              title="Active Drivers"
-              value="24"
-              icon={Users}
-              trend="+2"
-              colorClass="text-blue-600"
-              iconColor="#3B82F6"
-            />
-            <StatCard
-              title="Routes in Progress"
-              value="18"
-              icon={RouteIcon}
-              trend="+5"
-              colorClass="text-slate-900"
-              iconColor="#0F172A"
-            />
-          </View>
-
-          {/* Alerts / Action Required Section */}
-          <View className="px-5 mb-8">
-            <Text className="text-xl font-black text-slate-900 tracking-tight mb-4">Action Required</Text>
-
-            {loading ? (
-              <ActivityIndicator size="small" color="#0F172A" className="my-4" />
-            ) : flaggedIssues.length === 0 ? (
-              <View className="bg-white rounded-3xl p-6 border border-slate-200 items-center justify-center shadow-sm">
-                <CheckCircle2 size={32} color="#10B981" />
-                <Text className="text-slate-800 font-bold text-base mt-3">All clear!</Text>
-                <Text className="text-slate-500 text-sm mt-1">No customer complaints pending.</Text>
+          {loading ? (
+            <View className="py-20 items-center">
+              <ActivityIndicator size="large" color="#0F172A" />
+            </View>
+          ) : (
+            <>
+              {/* Live progress */}
+              <View className="px-5">
+                {stats ? (
+                  <ProgressHero stats={stats} />
+                ) : (
+                  <View className="bg-white rounded-[28px] p-6 mb-4 border border-slate-200 items-center">
+                    <Text className="text-slate-500 font-semibold">Couldn't load today's stats.</Text>
+                    <Text className="text-slate-400 text-xs mt-1">Pull down to retry.</Text>
+                  </View>
+                )}
               </View>
-            ) : (
-              flaggedIssues.map((issue) => (
-                <TouchableOpacity
-                  key={issue.id}
-                  onPress={() => { setSelectedIssue(issue); setShowResolveModal(true); }}
-                  className="bg-white rounded-3xl p-4 border border-red-100 flex-row items-center gap-4 mb-3"
-                  style={Platform.OS === 'android' ? { elevation: 2 } : { shadowColor: '#EF4444', shadowOpacity: 0.05, shadowRadius: 8 }}
-                >
-                  <View className="w-12 h-12 rounded-full bg-red-50 justify-center items-center">
-                    <AlertCircle color="#EF4444" size={24} strokeWidth={2.5} />
+
+              {/* Stat grid */}
+              {stats && (
+                <>
+                  <View className="flex-row px-5 gap-3 mb-3">
+                    <StatCard
+                      label="Pending Approvals"
+                      value={stats.pendingApprovals}
+                      sub={stats.pendingApprovals > 0 ? 'Needs review' : 'All clear'}
+                      icon={UserCheck}
+                      iconColor="#D97706"
+                      iconBg="bg-amber-50"
+                      onPress={() => go('/admin/customers')}
+                    />
+                    <StatCard
+                      label="Active Drivers"
+                      value={stats.activeDrivers}
+                      sub={`${stats.totalDrivers} total`}
+                      icon={Truck}
+                      iconColor="#2563EB"
+                      iconBg="bg-blue-50"
+                      onPress={() => go('/admin/drivers')}
+                    />
                   </View>
-                  <View className="flex-1">
-                    <Text className="text-base font-black text-slate-900 mb-1">{issue.customerName} reported an issue</Text>
-                    <Text className="text-sm font-medium text-slate-500" numberOfLines={1}>{issue.customerFeedback}</Text>
+
+                  <View className="flex-row px-5 gap-3 mb-8">
+                    <StatCard
+                      label="Revenue This Month"
+                      value={rupees(stats.monthRevenue)}
+                      sub={stats.monthLabel}
+                      icon={IndianRupee}
+                      iconColor="#059669"
+                      iconBg="bg-emerald-50"
+                      onPress={() => go('/admin/billing')}
+                    />
+                    <StatCard
+                      label="Active Customers"
+                      value={stats.activeCustomers}
+                      sub={`${stats.stopsExpected} stops today`}
+                      icon={Users}
+                      iconColor="#7C3AED"
+                      iconBg="bg-violet-50"
+                      onPress={() => go('/admin/customers')}
+                    />
                   </View>
-                  <ChevronRight color="#94A3B8" size={20} />
-                </TouchableOpacity>
-              ))
-            )}
-          </View>
+                </>
+              )}
+
+              {/* Action Required */}
+              <View className="px-5 mb-8">
+                <View className="flex-row items-center justify-between mb-4">
+                  <Text className="text-xl font-black text-slate-900 tracking-tight">Action Required</Text>
+                  {flaggedIssues.length > 0 && (
+                    <View className="bg-red-100 px-2.5 py-1 rounded-lg">
+                      <Text className="text-xs font-black text-red-700">{flaggedIssues.length}</Text>
+                    </View>
+                  )}
+                </View>
+
+                {flaggedIssues.length === 0 ? (
+                  <View className="bg-white rounded-3xl p-6 border border-slate-200 items-center justify-center">
+                    <PackageCheck size={32} color="#10B981" />
+                    <Text className="text-slate-800 font-bold text-base mt-3">All clear!</Text>
+                    <Text className="text-slate-500 text-sm mt-1">No customer complaints pending.</Text>
+                  </View>
+                ) : (
+                  flaggedIssues.map((issue) => (
+                    <Pressable
+                      key={issue.id}
+                      onPress={() => {
+                        setSelectedIssue(issue);
+                        setShowResolveModal(true);
+                      }}
+                      className="bg-white rounded-3xl p-4 border border-red-100 flex-row items-center gap-4 mb-3 active:bg-slate-50"
+                      style={
+                        Platform.OS === 'android'
+                          ? { elevation: 2 }
+                          : { shadowColor: '#EF4444', shadowOpacity: 0.05, shadowRadius: 8 }
+                      }
+                    >
+                      <View className="w-12 h-12 rounded-full bg-red-50 justify-center items-center">
+                        <AlertCircle color="#EF4444" size={24} strokeWidth={2.5} />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-base font-black text-slate-900 mb-1">
+                          {issue.customerName} reported an issue
+                        </Text>
+                        <Text className="text-sm font-medium text-slate-500" numberOfLines={1}>
+                          {issue.customerFeedback}
+                        </Text>
+                      </View>
+                      <ChevronRight color="#94A3B8" size={20} />
+                    </Pressable>
+                  ))
+                )}
+              </View>
+            </>
+          )}
         </ScrollView>
 
         {/* ISSUE RESOLUTION BOTTOM SHEET MODAL */}
-        <Modal visible={showResolveModal} transparent animationType="slide" onRequestClose={() => setShowResolveModal(false)}>
+        <Modal
+          visible={showResolveModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowResolveModal(false)}
+        >
           <View className="flex-1 justify-end bg-slate-900/40">
             <Pressable className="absolute inset-0" onPress={() => setShowResolveModal(false)} />
             <View className="bg-white rounded-t-[32px] p-6 pb-10" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
@@ -201,7 +390,10 @@ export default function AdminDashboard() {
                   </View>
                   <Text className="text-2xl font-black text-slate-800 tracking-tight">Review Issue</Text>
                 </View>
-                <Pressable onPress={() => setShowResolveModal(false)} className="h-10 w-10 bg-slate-50 rounded-full items-center justify-center border border-slate-100 active:bg-slate-100">
+                <Pressable
+                  onPress={() => setShowResolveModal(false)}
+                  className="h-10 w-10 bg-slate-50 rounded-full items-center justify-center border border-slate-100 active:bg-slate-100"
+                >
                   <X size={18} color="#64748B" />
                 </Pressable>
               </View>
@@ -226,15 +418,19 @@ export default function AdminDashboard() {
                   <View className="h-px bg-slate-200 my-2" />
 
                   <View>
-                    <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Complaint Details</Text>
-                    <View className="bg-white p-4 rounded-xl border border-red-100 shadow-sm">
+                    <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                      Complaint Details
+                    </Text>
+                    <View className="bg-white p-4 rounded-xl border border-red-100">
                       <Text className="text-slate-800 font-semibold leading-5">{selectedIssue.customerFeedback}</Text>
                     </View>
                   </View>
 
                   <View className="flex-row items-center gap-2 mt-2">
                     <Clock size={14} color="#94A3B8" />
-                    <Text className="text-slate-500 text-xs font-medium">Reported for delivery on {formatDate(selectedIssue.deliveryDate)}</Text>
+                    <Text className="text-slate-500 text-xs font-medium">
+                      Reported for delivery on {formatDate(selectedIssue.deliveryDate)}
+                    </Text>
                   </View>
                 </View>
               )}
@@ -242,9 +438,11 @@ export default function AdminDashboard() {
               <Pressable
                 onPress={handleResolveIssue}
                 disabled={resolving}
-                className="bg-slate-900 h-16 rounded-[24px] items-center justify-center flex-row gap-2 active:opacity-90 shadow-xl shadow-slate-900/10"
+                className="bg-slate-900 h-16 rounded-[24px] items-center justify-center flex-row gap-2 active:opacity-90"
               >
-                {resolving ? <ActivityIndicator color="white" /> : (
+                {resolving ? (
+                  <ActivityIndicator color="white" />
+                ) : (
                   <>
                     <CheckCircle2 size={20} color="white" />
                     <Text className="text-white text-base font-black tracking-wide">Mark as Resolved</Text>
@@ -254,7 +452,6 @@ export default function AdminDashboard() {
             </View>
           </View>
         </Modal>
-
       </SafeAreaView>
     </View>
   );

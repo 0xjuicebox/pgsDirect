@@ -11,6 +11,7 @@ import {
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router'
 import * as Haptics from 'expo-haptics';
 import {
   ChevronLeft, ChevronRight, Receipt, TrendingUp, CircleCheck,
@@ -146,6 +147,8 @@ export default function BillingScreen() {
     }
   };
 
+  const router = useRouter()
+
   return (
     <View className="flex-1 bg-slate-50">
       <SafeAreaView className="flex-1">
@@ -257,12 +260,11 @@ export default function BillingScreen() {
                   return (
                     <Pressable
                       key={t.customerId}
-                      disabled={!t.isFinalized}
                       onPress={() => {
-                        setSelectedTally(t);
-                        setShowPayModal(true);
+                        if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        router.push(`/admin/billing/${t.customerId}?month=${month}&name=${encodeURIComponent(t.customerName)}`);
                       }}
-                      className={`bg-white rounded-3xl p-5 mx-5 mb-3 border border-slate-200 ${t.isFinalized ? 'active:opacity-90' : ''}`}
+                      className="bg-white rounded-3xl p-5 mx-5 mb-3 border border-slate-200 active:opacity-90"
                     >
                       <View className="flex-row justify-between items-start">
                         <View className="flex-1 pr-2">
@@ -284,9 +286,9 @@ export default function BillingScreen() {
                           )}
                         </View>
                       </View>
-                      {t.isFinalized && (
+                      {
                         <Text className="text-[11px] text-slate-400 font-semibold mt-2">Tap to update payment status</Text>
-                      )}
+                      }
                     </Pressable>
                   );
                 })
