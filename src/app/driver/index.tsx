@@ -9,7 +9,7 @@ import {
   ScrollView,
   ActivityIndicator,
   RefreshControl,
-  Linking
+  Linking,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -28,23 +28,52 @@ import {
   Layers,
   Circle,
   AlertCircle,
-  Flag
+  Sun,
+  Moon,
+  CloudOff,
+  Clock,
 } from 'lucide-react-native';
-import { SafeAreaView } from "react-native-safe-area-context"
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api } from '../../utils/api';
 import { supabase } from '../../utils/supabase';
+import {
+  submitDelivery,
+  startQueueWorker,
+  subscribe as subscribeQueue,
+  drain as drainQueue,
+  DeliveryPayload,
+} from '../../utils/deliveryQueue';
 
-// --- TYPES & INTERFACES ---
+// ==========================================
+// TYPES
+// ==========================================
+
+type Slot = 'morning' | 'evening';
+
 type OrderData = { [key: string]: number };
 type Stop = {
-  id: string;
+  id: string;              // customer_id, since one manifest row = one customer for this slot
   customer: string;
   address: string;
   phone: string;
   status: 'PENDING' | 'DELIVERED' | 'SKIPPED' | 'UNATTEMPTED' | 'SYSTEM_AUTO_CLOSED';
   expectedOrder: OrderData;
   actualOrder?: OrderData;
+};
+
+type ShiftRow = {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  status: 'ACTIVE' | 'ENDED' | 'AUTO_ENDED';
+};
+
+type ShiftState = {
+  date: string;
+  morning: ShiftRow | null;
+  evening: ShiftRow | null;
+  cutoffs: { morningCutoff: string; eveningCutoff: string };
 };
 
 const UNIT_MAP: Record<string, string> = {
@@ -63,17 +92,111 @@ const getIconForItem = (name: string) => {
 };
 
 // ==========================================
-// 🧩 SUB-COMPONENTS
+// SLOT PICKER
+//
+// v1 driver assumption: one driver = one slot per day (usually). The
+// picker sits at the top and drives which manifest we're looking at.
+// If both slots have data, both buttons are enabled — driver can flip
+// between them freely; the ACTIVE shift and its Start/End state stay
+// tied to whichever slot is selected.
 // ==========================================
 
-const CustomAlert = ({ visible, title, message, cancelText = "Cancel", confirmText = "Confirm", isDestructive = false, showCancel = true, onCancel, onConfirm }: any) => (
+const SlotPicker = ({ current, onChange, morningActive, eveningActive }: any) => (
+  <View className="flex-row bg-slate-100 rounded-2xl p-1 mb-4">
+    <Pressable
+      onPress={() => onChange('morning')}
+      className={`flex-1 py-3 rounded-xl flex-row justify-center items-center gap-2 ${current === 'morning' ? 'bg-white' : ''}`}
+      style={current === 'morning' && Platform.OS === 'android' ? { elevation: 2 } : {}}
+    >
+      <Sun size={16} color={current === 'morning' ? '#F59E0B' : '#94A3B8'} />
+      <Text className={`text-sm font-black tracking-tight ${current === 'morning' ? 'text-slate-800' : 'text-slate-400'}`}>
+        Morning
+      </Text>
+      {morningActive && <View className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
+    </Pressable>
+    <Pressable
+      onPress={() => onChange('evening')}
+      className={`flex-1 py-3 rounded-xl flex-row justify-center items-center gap-2 ${current === 'evening' ? 'bg-white' : ''}`}
+      style={current === 'evening' && Platform.OS === 'android' ? { elevation: 2 } : {}}
+    >
+      <Moon size={16} color={current === 'evening' ? '#6366F1' : '#94A3B8'} />
+      <Text className={`text-sm font-black tracking-tight ${current === 'evening' ? 'text-slate-800' : 'text-slate-400'}`}>
+        Evening
+      </Text>
+      {eveningActive && <View className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
+    </Pressable>
+  </View>
+);
+
+// ==========================================
+// SHIFT CONTROL — Start / End button for the current slot
+//
+// Rendered at the top of the screen. Three states:
+//   - No row: "Start Shift" (green)
+//   - ACTIVE: "End Shift" (red outline)
+//   - ENDED / AUTO_ENDED: passive "Shift Ended" chip with the end time
+//
+// Auto-ended shifts show a softer amber tone since the driver didn't
+// actually end them — the sweeper did. Deliveries after cutoff still
+// work; the label is informational only.
+// ==========================================
+
+const ShiftControl = ({ shift, slot, busy, onStart, onEnd }: any) => {
+  if (!shift) {
+    return (
+      <Pressable
+        onPress={onStart}
+        disabled={busy}
+        className="bg-green-500 h-14 rounded-2xl items-center justify-center flex-row gap-2 mb-4 active:opacity-90"
+        style={Platform.OS === 'android' ? { elevation: 3 } : { shadowColor: '#22C55E', shadowOpacity: 0.25, shadowRadius: 6 }}
+      >
+        {busy ? <ActivityIndicator color="white" /> : (
+          <>
+            <Text className="text-white text-base font-black tracking-wide">Start {slot === 'morning' ? 'Morning' : 'Evening'} Shift</Text>
+          </>
+        )}
+      </Pressable>
+    );
+  }
+
+  if (shift.status === 'ACTIVE') {
+    return (
+      <Pressable
+        onPress={onEnd}
+        disabled={busy}
+        className="bg-white border-2 border-red-200 h-14 rounded-2xl items-center justify-center flex-row gap-2 mb-4 active:bg-red-50"
+      >
+        {busy ? <ActivityIndicator color="#EF4444" /> : (
+          <Text className="text-red-600 text-base font-black tracking-wide">End Shift</Text>
+        )}
+      </Pressable>
+    );
+  }
+
+  // ENDED or AUTO_ENDED
+  const auto = shift.status === 'AUTO_ENDED';
+  return (
+    <View className={`h-14 rounded-2xl items-center justify-center flex-row gap-2 mb-4 border ${auto ? 'bg-amber-50 border-amber-200' : 'bg-slate-100 border-slate-200'}`}>
+      <Clock size={16} color={auto ? '#D97706' : '#64748B'} />
+      <Text className={`text-sm font-bold ${auto ? 'text-amber-800' : 'text-slate-600'}`}>
+        {auto ? 'Shift auto-ended past cutoff' : 'Shift ended'}
+        {shift.endedAt && ` · ${new Date(shift.endedAt).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}`}
+      </Text>
+    </View>
+  );
+};
+
+// ==========================================
+// PRESERVED COMPONENTS — CustomAlert, MilkStatCard, SecondaryInventoryBadges,
+// ProgressBar, ItemPill, StopCard, DeliveryModal
+// (unchanged from previous version, just moved for organization)
+// ==========================================
+
+const CustomAlert = ({ visible, title, message, cancelText = 'Cancel', confirmText = 'Confirm', isDestructive = false, showCancel = true, onCancel, onConfirm }: any) => (
   <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
     <View className="flex-1 justify-center items-center bg-slate-900/40 px-5">
       <Pressable className="absolute inset-0" onPress={showCancel ? onCancel : onConfirm} />
-      <View
-        className="bg-white w-full max-w-sm rounded-[24px] p-6"
-        style={Platform.OS === 'android' ? { elevation: 10 } : { shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15 }}
-      >
+      <View className="bg-white w-full max-w-sm rounded-[24px] p-6" style={Platform.OS === 'android' ? { elevation: 10 } : { shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15 }}>
         <View className="items-center mb-4">
           <View className={`w-12 h-12 rounded-full items-center justify-center mb-3 ${isDestructive ? 'bg-red-50' : 'bg-slate-50'}`}>
             <AlertCircle size={24} color={isDestructive ? '#EF4444' : '#64748B'} />
@@ -96,7 +219,7 @@ const CustomAlert = ({ visible, title, message, cancelText = "Cancel", confirmTe
   </Modal>
 );
 
-const MilkStatCard = ({ expected, delivered }: { expected: number, delivered: number }) => (
+const MilkStatCard = ({ expected, delivered }: { expected: number; delivered: number }) => (
   <View className="bg-white rounded-3xl p-5 border border-slate-200 mb-4" style={Platform.OS === 'android' ? { elevation: 3 } : { shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10 }}>
     <View className="flex-row items-center gap-2 mb-4">
       <Droplets size={20} color="#16A34A" />
@@ -122,7 +245,7 @@ const MilkStatCard = ({ expected, delivered }: { expected: number, delivered: nu
   </View>
 );
 
-const SecondaryInventoryBadges = ({ items }: { items: { name: string, expected: number, delivered: number }[] }) => {
+const SecondaryInventoryBadges = ({ items }: { items: { name: string; expected: number; delivered: number }[] }) => {
   if (items.length === 0) return null;
   return (
     <View className="mb-2">
@@ -135,8 +258,12 @@ const SecondaryInventoryBadges = ({ items }: { items: { name: string, expected: 
             <View key={index} className="w-1/5 p-1">
               <View className={`items-center justify-center border rounded-[14px] py-2.5 px-0.5 h-full ${isComplete ? 'bg-green-50/50 border-green-200' : 'bg-white border-slate-200'}`}>
                 <Icon size={20} color={isComplete ? '#15803D' : '#64748B'} strokeWidth={2.5} />
-                <Text className={`text-[9px] font-bold uppercase tracking-wider mt-1.5 mb-1 text-center w-full ${isComplete ? 'text-green-700' : 'text-slate-500'}`} numberOfLines={1} adjustsFontSizeToFit>{item.name}</Text>
-                <Text className={`font-black text-[12px] text-center tracking-tighter ${isComplete ? 'text-green-800' : 'text-slate-800'}`} numberOfLines={1} adjustsFontSizeToFit>{item.delivered}/{item.expected}</Text>
+                <Text className={`text-[9px] font-bold uppercase tracking-wider mt-1.5 mb-1 text-center w-full ${isComplete ? 'text-green-700' : 'text-slate-500'}`} numberOfLines={1} adjustsFontSizeToFit>
+                  {item.name}
+                </Text>
+                <Text className={`font-black text-[12px] text-center tracking-tighter ${isComplete ? 'text-green-800' : 'text-slate-800'}`} numberOfLines={1} adjustsFontSizeToFit>
+                  {item.delivered}/{item.expected}
+                </Text>
               </View>
             </View>
           );
@@ -146,7 +273,7 @@ const SecondaryInventoryBadges = ({ items }: { items: { name: string, expected: 
   );
 };
 
-const ProgressBar = ({ completed, total }: { completed: number, total: number }) => {
+const ProgressBar = ({ completed, total }: { completed: number; total: number }) => {
   const percentage = total === 0 ? 0 : Math.round((completed / total) * 100);
   return (
     <View className="mt-4 mb-4 px-1">
@@ -161,7 +288,7 @@ const ProgressBar = ({ completed, total }: { completed: number, total: number })
   );
 };
 
-const ItemPill = ({ name, qty }: { name: string, qty: number }) => {
+const ItemPill = ({ name, qty }: { name: string; qty: number }) => {
   const unit = UNIT_MAP[name.toLowerCase()] || '';
   return (
     <View className="flex-row items-center bg-slate-50 px-2.5 py-1.5 rounded-lg mr-2 mb-2 border border-slate-100">
@@ -285,97 +412,76 @@ const DeliveryModal = ({ visible, stop, editedOrder, onClose, onAdjust, onConfir
 };
 
 // ==========================================
-// 🚀 MAIN ORCHESTRATION CONTAINER
+// MAIN SCREEN
 // ==========================================
 
+// Helpers for slot-scoped state — we keep manifests per slot in memory so
+// switching morning ↔ evening is instant, and refetching one doesn't wipe
+// the other's work-in-progress.
+type SlotBucket = { stops: Stop[]; routeId: string };
+
 export default function DriverManifestScreen() {
+  const [driverName, setDriverName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isShiftComplete, setIsShiftComplete] = useState(false);
-  const [stops, setStops] = useState<Stop[]>([]);
-  const [driverName, setDriverName] = useState("");
-  const [activeRouteId, setActiveRouteId] = useState("");
+  const [busy, setBusy] = useState(false); // shift Start/End button spinner
+
+  const [currentSlot, setCurrentSlot] = useState<Slot>(guessSlot());
+  const [shiftState, setShiftState] = useState<ShiftState | null>(null);
+  const [buckets, setBuckets] = useState<Record<Slot, SlotBucket>>({
+    morning: { stops: [], routeId: '' },
+    evening: { stops: [], routeId: '' },
+  });
 
   const [activeStop, setActiveStop] = useState<Stop | null>(null);
   const [deliveryModalVisible, setDeliveryModalVisible] = useState(false);
   const [editedOrder, setEditedOrder] = useState<OrderData>({});
   const [alertConfig, setAlertConfig] = useState<any>(null);
+  const [queueCount, setQueueCount] = useState(0);
 
   const today = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 
-  // --- 🔌 BACKEND SYNC LOGIC ---
-  const fetchManifest = useCallback(async () => {
+  // ------------------------------------------------------------------
+  // Data loading — shift state + both manifests
+  //
+  // Both slots are fetched even if the driver only works one. The cost
+  // is one extra HTTP call at load time; the benefit is that switching
+  // slots feels instant and load aggregation shows the true full-day
+  // picture from the start.
+  // ------------------------------------------------------------------
+
+  const loadEverything = useCallback(async () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const name = user?.user_metadata?.full_name || "Driver";
+      const name = user?.user_metadata?.full_name || 'Driver';
       setDriverName(name);
-
       await api.post('/driver/sync', { name });
 
       const todayStr = new Date().toISOString().split('T')[0];
-      const manifestData = await api.get(`/driver/manifest?date=${todayStr}`);
 
-      setActiveRouteId(manifestData.routeId);
+      const [shift, mMan, eMan] = await Promise.allSettled([
+        api.get('/driver/shift/today'),
+        api.get(`/driver/manifest?date=${todayStr}&slot=morning`),
+        api.get(`/driver/manifest?date=${todayStr}&slot=evening`),
+      ]);
 
-      if (manifestData.stops && manifestData.stops.length > 0) {
-        const mappedStops: Stop[] = manifestData.stops.map((backendStop: any) => {
-          // Parse Expected
-          const expected: OrderData = {};
-          Object.entries(backendStop.deliveryOrder || {}).forEach(([key, value]) => {
-            if (typeof value === 'number' && value > 0) {
-              const cleanKey = key.replace('Quantity', '');
-              expected[cleanKey] = value;
-            }
-          });
+      if (shift.status === 'fulfilled') setShiftState(shift.value);
 
-          // Parse Actual (This now correctly populates because the Go backend sends it!)
-          const actual: OrderData = {};
-          if (backendStop.status === 'DELIVERED') {
-            Object.entries(backendStop.actualOrder || {}).forEach(([key, value]) => {
-              if (typeof value === 'number' && value > 0) {
-                const cleanKey = key.replace('Quantity', '');
-                actual[cleanKey] = value;
-              }
-            });
-          }
+      setBuckets({
+        morning: manifestToBucket(mMan),
+        evening: manifestToBucket(eMan),
+      });
 
-          return {
-            id: backendStop.id,
-            customer: backendStop.customer || backendStop.name || 'Unknown',
-            address: backendStop.houseAddress || 'No Address provided',
-            phone: backendStop.phoneNumber || '',
-            status: backendStop.status || 'PENDING',
-            expectedOrder: expected,
-            actualOrder: backendStop.status === 'DELIVERED' ? actual : undefined,
-          };
-        });
-
-        setStops(mappedStops);
-
-        // Auto-lock the UI if ALL stops are processed (either delivered, skipped, or unattempted)
-        const isAllComplete = mappedStops.every(s => s.status !== 'PENDING');
-        if (isAllComplete && mappedStops.length > 0) {
-          setIsShiftComplete(true);
-        } else {
-          setIsShiftComplete(false); // Make sure it unlocks if a new day starts
-        }
-      } else {
-        setStops([]);
-        setIsShiftComplete(false);
-      }
-    } catch (error: any) {
-      if (error?.response?.status === 404 || error.message?.includes("404") || error.message?.includes("No active route")) {
-        setStops([]);
-        setActiveRouteId("");
-      } else {
-        setAlertConfig({
-          title: "Network Error",
-          message: "Could not connect to the backend server. Pull down to try again.",
-          confirmText: "Okay",
-          showCancel: false,
-          onConfirm: () => setAlertConfig(null)
-        });
-      }
+      // Any queued rows may now sync since we clearly have network.
+      drainQueue();
+    } catch (err: any) {
+      setAlertConfig({
+        title: 'Network Error',
+        message: 'Could not connect to the backend. Pull down to try again.',
+        confirmText: 'Okay',
+        showCancel: false,
+        onConfirm: () => setAlertConfig(null),
+      });
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -383,20 +489,163 @@ export default function DriverManifestScreen() {
   }, []);
 
   useEffect(() => {
-    fetchManifest();
-  }, [fetchManifest]);
+    startQueueWorker();
+    const unsub = subscribeQueue((items) => setQueueCount(items.length));
+    loadEverything();
+    return unsub;
+  }, [loadEverything]);
 
   const onRefresh = useCallback(() => {
     setIsRefreshing(true);
-    fetchManifest();
-  }, [fetchManifest]);
+    loadEverything();
+  }, [loadEverything]);
 
-  // --- 🧮 METRICS CALCULATION ---
-  const totals = useMemo(() => {
+  // ------------------------------------------------------------------
+  // Shift actions
+  // ------------------------------------------------------------------
+
+  const startShift = async () => {
+    setBusy(true);
+    try {
+      const row = await api.post('/driver/shift/start', { slot: currentSlot });
+      setShiftState((prev) => prev ? { ...prev, [currentSlot]: row } : prev);
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      setAlertConfig({ title: 'Could not start shift', message: err?.message || 'Try again.', confirmText: 'OK', showCancel: false, onConfirm: () => setAlertConfig(null) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const endShift = () => {
+    setAlertConfig({
+      title: `End ${currentSlot === 'morning' ? 'Morning' : 'Evening'} Shift?`,
+      message: `You'll close out this slot for today. You can still deliver stops if needed — this is a marker for the admin.`,
+      confirmText: 'End Shift',
+      cancelText: 'Not yet',
+      isDestructive: true,
+      onCancel: () => setAlertConfig(null),
+      onConfirm: async () => {
+        setAlertConfig(null);
+        setBusy(true);
+        try {
+          const row = await api.post('/driver/shift/end', { slot: currentSlot });
+          setShiftState((prev) => prev ? { ...prev, [currentSlot]: row } : prev);
+          if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch (err: any) {
+          setAlertConfig({ title: 'Could not end shift', message: err?.message || 'Try again.', confirmText: 'OK', showCancel: false, onConfirm: () => setAlertConfig(null) });
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  };
+
+  // ------------------------------------------------------------------
+  // Delivery actions — all go through the offline queue
+  // ------------------------------------------------------------------
+
+  const currentBucket = buckets[currentSlot];
+  const currentShift = shiftState?.[currentSlot] ?? null;
+
+  const handleDeliver = (stop: Stop) => {
+    setActiveStop(stop);
+    setEditedOrder({ ...stop.expectedOrder });
+    setDeliveryModalVisible(true);
+  };
+
+  const handleAdjust = (key: string, delta: number) => {
+    setEditedOrder((prev) => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) + delta) }));
+  };
+
+  const confirmDelivery = () => {
+    if (!activeStop) return;
+    optimisticUpdateStop(activeStop.id, 'DELIVERED', editedOrder);
+    submitStop(activeStop, 'DELIVERED', editedOrder);
+    setDeliveryModalVisible(false);
+    setActiveStop(null);
+  };
+
+  const handleSkip = (stop: Stop) => {
+    setAlertConfig({
+      title: 'Skip this stop?',
+      message: `${stop.customer} will be marked as skipped.`,
+      confirmText: 'Skip',
+      cancelText: 'Cancel',
+      isDestructive: true,
+      onCancel: () => setAlertConfig(null),
+      onConfirm: () => {
+        setAlertConfig(null);
+        optimisticUpdateStop(stop.id, 'SKIPPED');
+        submitStop(stop, 'SKIPPED');
+      },
+    });
+  };
+
+  const optimisticUpdateStop = (stopId: string, status: Stop['status'], order?: OrderData) => {
+    setBuckets((prev) => ({
+      ...prev,
+      [currentSlot]: {
+        ...prev[currentSlot],
+        stops: prev[currentSlot].stops.map((s) =>
+          s.id === stopId ? { ...s, status, actualOrder: order } : s
+        ),
+      },
+    }));
+  };
+
+  const submitStop = async (stop: Stop, status: Stop['status'], order?: OrderData) => {
+    // Convert our compact {milk:2} shape to the backend's actualOrder shape.
+    const actualOrder: Record<string, number> = {};
+    if (status === 'DELIVERED' && order) {
+      Object.entries(order).forEach(([k, v]) => {
+        if (v > 0) actualOrder[k] = v;
+      });
+    }
+
+    const payload: DeliveryPayload = {
+      customerId: stop.id,
+      routeId: currentBucket.routeId,
+      slot: currentSlot,
+      date: new Date().toISOString().split('T')[0],
+      status: status as any,
+      actualOrder: status === 'DELIVERED' ? actualOrder : undefined,
+      driverLatitude: 0,
+      driverLongitude: 0,
+    };
+
+    const { synced } = await submitDelivery(payload);
+    if (!synced) {
+      // The delivery is queued but the first attempt didn't succeed. UI is
+      // already showing it as delivered/skipped (optimistic) — no scary
+      // banner, just a small hint that "N pending" via the header badge.
+      console.log('Delivery queued for retry:', stop.customer);
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // Load aggregation
+  //
+  // Sum expected quantities across ALL stops (both slots), converted to
+  // sensible display units for the driver packing the cart. Milk gets its
+  // own big card since it's the primary cargo; everything else lives in
+  // the inventory badges.
+  //
+  // Storage note: backend stores milk as ml (2000ml = 2L), curd/paneer as
+  // grams, etc. We keep the raw sum in base units internally and only
+  // format to L/kg at render time — matching the same rule the customer
+  // pages use.
+  // ------------------------------------------------------------------
+
+  const loadTotals = useMemo(() => {
     const expected: OrderData = {};
     const delivered: OrderData = {};
 
-    stops.forEach(stop => {
+    // Full-day load = both buckets, regardless of currentSlot. This is
+    // what the driver actually needs to pack in the cart.
+    const allStops = [...buckets.morning.stops, ...buckets.evening.stops];
+
+    allStops.forEach((stop) => {
       Object.entries(stop.expectedOrder).forEach(([item, qty]) => {
         expected[item] = (expected[item] || 0) + qty;
       });
@@ -406,243 +655,182 @@ export default function DriverManifestScreen() {
         });
       }
     });
-    return { expected, delivered };
-  }, [stops]);
 
-  const milkExpected = totals.expected.milk || 0;
-  const milkDelivered = totals.delivered.milk || 0;
-  const pendingCount = stops.filter(s => s.status === 'PENDING').length;
-  const completedStopsCount = stops.length - pendingCount;
+    // Milk shown in litres, everything else in its natural unit.
+    const milkExpectedL = Math.round((expected.milk || 0) / 1000);
+    const milkDeliveredL = Math.round((delivered.milk || 0) / 1000);
 
-  const secondaryItems = Object.keys(totals.expected)
-    .filter(key => key !== 'milk')
-    .map(key => ({
-      name: key,
-      expected: totals.expected[key] || 0,
-      delivered: totals.delivered[key] || 0
-    }));
+    const inventory = Object.keys(expected)
+      .filter((name) => name !== 'milk' && expected[name] > 0)
+      .map((name) => ({
+        name,
+        expected: expected[name],
+        delivered: delivered[name] || 0,
+      }));
 
-  // --- 🕹️ UI HANDLERS ---
-  const handleOpenDeliverySheet = (stop: Stop) => {
-    setActiveStop(stop);
-    setEditedOrder({ ...stop.expectedOrder });
-    setDeliveryModalVisible(true);
-  };
+    return { milkExpectedL, milkDeliveredL, inventory };
+  }, [buckets]);
 
-  const handleQtyAdjust = (item: string, delta: number) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setEditedOrder(prev => ({ ...prev, [item]: Math.max(0, (prev[item] || 0) + delta) }));
-  };
+  const stops = currentBucket.stops;
+  const completedCount = stops.filter((s) => s.status !== 'PENDING').length;
+  const morningActive = shiftState?.morning?.status === 'ACTIVE';
+  const eveningActive = shiftState?.evening?.status === 'ACTIVE';
 
-  const submitLogToBackend = async (stopId: string, status: string, finalOrder?: OrderData) => {
-    try {
-      const orderPayload: any = {};
-      if (finalOrder) {
-        Object.entries(finalOrder).forEach(([key, value]) => {
-          // THIS IS THE CRITICAL FIX: Adding the "Quantity" suffix back so Go parses it correctly
-          orderPayload[`${key}Quantity`] = value;
-        });
-      }
-
-      await api.post('/delivery', {
-        customerId: stopId,
-        routeId: activeRouteId,
-        date: new Date().toISOString().split('T')[0],
-        status: status,
-        actualOrder: status === 'DELIVERED' ? orderPayload : undefined,
-        driverLatitude: 0,
-        driverLongitude: 0,
-      });
-    } catch (e) {
-      console.error("Failed to sync log to server:", e);
-      setAlertConfig({
-        title: "Sync Error",
-        message: "Delivery marked locally but failed to reach the server.",
-        confirmText: "Okay",
-        showCancel: false,
-        onConfirm: () => setAlertConfig(null)
-      });
-    }
-  };
-
-  const handleConfirmDelivery = () => {
-    if (!activeStop) return;
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    setStops(prev => prev.map(s => s.id === activeStop.id ? { ...s, status: 'DELIVERED', actualOrder: editedOrder } : s));
-    setDeliveryModalVisible(false);
-    setTimeout(() => setActiveStop(null), 350);
-
-    submitLogToBackend(activeStop.id, 'DELIVERED', editedOrder);
-  };
-
-  const handleSkipStop = (stop: Stop) => {
-    setAlertConfig({
-      title: "Skip Delivery?",
-      message: `Are you sure you want to bypass the delivery for ${stop.customer}?`,
-      confirmText: "Skip Stop",
-      isDestructive: true,
-      onCancel: () => setAlertConfig(null),
-      onConfirm: () => {
-        if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        setStops(prev => prev.map(s => s.id === stop.id ? { ...s, status: 'SKIPPED' } : s));
-        setAlertConfig(null);
-        submitLogToBackend(stop.id, 'SKIPPED');
-      }
-    });
-  };
-
-  const handleCall = (phone: string) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const cleanPhone = phone.replace(/[^0-9+]/g, '');
-    Linking.openURL(`tel:${cleanPhone}`).catch(() => {
-      setAlertConfig({
-        title: "Error",
-        message: "Could not open the phone dialer.",
-        confirmText: "Okay",
-        showCancel: false,
-        onConfirm: () => setAlertConfig(null)
-      });
-    });
-  };
-
-  const handleNavigate = (address: string) => {
-    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const encodedAddress = encodeURIComponent(address);
-    const url = Platform.select({
-      ios: `maps:0,0?q=${encodedAddress}`,
-      android: `geo:0,0?q=${encodedAddress}`,
-      default: `https://maps.google.com/?q=${encodedAddress}`
-    });
-    Linking.openURL(url!).catch(() => {
-      Linking.openURL(`https://maps.google.com/?q=${encodedAddress}`);
-    });
-  };
-
-  // --- 🏁 END SHIFT LOGIC ---
-  const handleEndShiftRequest = () => {
-    if (pendingCount > 0) {
-      setAlertConfig({
-        title: "End Shift Early?",
-        message: `You still have ${pendingCount} pending deliveries. Finishing now will mark these as UNATTEMPTED and alert the depot manager. Are you sure?`,
-        confirmText: "End Shift",
-        cancelText: "Keep Delivering",
-        isDestructive: true,
-        onCancel: () => setAlertConfig(null),
-        onConfirm: executeEndShift
-      });
-    } else {
-      setAlertConfig({
-        title: "Complete Route",
-        message: "You've marked all stops! Ready to wrap up for the day?",
-        confirmText: "Yes, Finish",
-        cancelText: "Wait",
-        isDestructive: false,
-        onCancel: () => setAlertConfig(null),
-        onConfirm: executeEndShift
-      });
-    }
-  };
-
-  const executeEndShift = async () => {
-    setAlertConfig(null);
-    try {
-      setIsShiftComplete(true);
-      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      await api.post('/driver/route/close', {});
-    } catch (e) {
-      console.error("Failed to close route on server", e);
-      setIsShiftComplete(false);
-      setAlertConfig({
-        title: "Network Error",
-        message: "Failed to close route. Check your connection and try again.",
-        confirmText: "Okay",
-        showCancel: false,
-        onConfirm: () => setAlertConfig(null)
-      });
-    }
-  };
-
-  const renderHeader = () => (
-    <View className="px-5 pt-4 pb-2">
-      <Text className="text-3xl font-black text-slate-800 tracking-tighter">Hi {driverName}</Text>
-      <Text className="text-sm font-semibold text-slate-400 mb-6">{today}</Text>
-
-      {stops.length > 0 && (
-        <>
-          <MilkStatCard expected={milkExpected} delivered={milkDelivered} />
-          <SecondaryInventoryBadges items={secondaryItems} />
-          <ProgressBar completed={completedStopsCount} total={stops.length} />
-        </>
-      )}
-    </View>
-  );
-
-  const renderFooter = () => {
-    if (stops.length === 0) return null;
-    return (
-      <View className="px-5 mt-6 mb-12">
-        <Pressable onPress={handleEndShiftRequest} className="bg-slate-800 h-[56px] rounded-2xl items-center justify-center active:opacity-90 flex-row gap-2">
-          <Flag size={20} color="white" />
-          <Text className="text-white text-base font-black tracking-wide">Finish Route & Return</Text>
-        </Pressable>
-      </View>
-    );
-  };
-
-  if (isShiftComplete) {
-    return (
-      <View className="flex-1 bg-slate-50 items-center justify-center px-6">
-        <View className="w-24 h-24 bg-green-100 rounded-full items-center justify-center mb-6">
-          <CheckCircle2 size={48} color="#16A34A" />
-        </View>
-        <Text className="text-3xl font-black text-slate-800 tracking-tighter text-center">Shift Complete</Text>
-        <Text className="text-slate-500 font-medium mt-3 text-center text-base leading-6">
-          You've successfully closed your route for {today}. Have a great rest of your day!
-        </Text>
-      </View>
-    );
-  }
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
 
   if (isLoading) {
     return (
-      <View className="flex-1 bg-slate-50 items-center justify-center">
-        <ActivityIndicator size="large" color="#16A34A" />
-        <Text className="text-slate-500 font-semibold mt-4 tracking-wide">Syncing your route...</Text>
+      <View className="flex-1 bg-slate-50 justify-center items-center">
+        <ActivityIndicator size="large" color="#0F172A" />
       </View>
     );
   }
 
+  const noStopsForSlot = stops.length === 0;
+
   return (
     <View className="flex-1 bg-slate-50">
-      <SafeAreaView className="flex-1">
+      <SafeAreaView className="flex-1" edges={['top', 'left', 'right']}>
         <FlatList
           data={stops}
-          keyExtractor={(item: any) => item.id}
-          ListHeaderComponent={renderHeader}
-          ListFooterComponent={renderFooter}
-          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor="#16A34A" colors={['#16A34A']} />}
-          renderItem={({ item, index }: any) => (
-            <View className="px-5">
-              <StopCard stop={item} index={index} onDeliver={handleOpenDeliverySheet} onSkip={handleSkipStop} onCall={handleCall} onNavigate={handleNavigate} />
-            </View>
+          keyExtractor={(s) => s.id}
+          renderItem={({ item, index }) => (
+            <StopCard
+              stop={item}
+              index={index}
+              onDeliver={handleDeliver}
+              onSkip={handleSkip}
+              onCall={(phone: string) => Linking.openURL(`tel:${phone}`)}
+              onNavigate={(addr: string) => Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(addr)}`)}
+            />
           )}
-          contentContainerStyle={{ paddingBottom: 120 }}
+          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 120 }}
+          refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor="#0F172A" />}
           showsVerticalScrollIndicator={false}
+          ListHeaderComponent={
+            <View>
+              {/* Header */}
+              <View className="flex-row justify-between items-center px-1 pt-4 pb-4">
+                <View>
+                  <Text className="text-slate-500 text-sm font-semibold">{today}</Text>
+                  <Text className="text-2xl font-black text-slate-900 tracking-tight">{driverName}</Text>
+                </View>
+                {queueCount > 0 && (
+                  <View className="flex-row items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded-full border border-amber-200">
+                    <CloudOff size={14} color="#D97706" />
+                    <Text className="text-amber-800 text-xs font-black">{queueCount} pending</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Slot picker */}
+              <SlotPicker
+                current={currentSlot}
+                onChange={setCurrentSlot}
+                morningActive={morningActive}
+                eveningActive={eveningActive}
+              />
+
+              {/* Shift control */}
+              <ShiftControl
+                shift={currentShift}
+                slot={currentSlot}
+                busy={busy}
+                onStart={startShift}
+                onEnd={endShift}
+              />
+
+              {/* Load aggregation — always shows full-day totals across
+                  both slots so the driver knows what to pack, even if
+                  they haven't started the shift yet. */}
+              <MilkStatCard expected={loadTotals.milkExpectedL} delivered={loadTotals.milkDeliveredL} />
+              <SecondaryInventoryBadges items={loadTotals.inventory} />
+
+              {!noStopsForSlot && (
+                <ProgressBar completed={completedCount} total={stops.length} />
+              )}
+            </View>
+          }
           ListEmptyComponent={
-            <View className="items-center justify-center mt-10">
-              <Package size={48} color="#CBD5E1" />
-              <Text className="text-slate-700 font-bold text-base mt-4">No Route Assigned</Text>
-              <Text className="text-slate-400 font-medium text-center px-8 mt-2">
-                You have no active deliveries for today. Pull down to refresh if you were just assigned a route.
+            <View className="items-center justify-center py-16 px-6">
+              <Package size={40} color="#CBD5E1" />
+              <Text className="text-slate-500 font-bold mt-3 text-center">
+                No stops assigned for the {currentSlot} slot today.
               </Text>
+              {currentSlot === 'morning' && buckets.evening.stops.length > 0 && (
+                <Pressable onPress={() => setCurrentSlot('evening')} className="mt-3 px-4 py-2 bg-white rounded-full border border-slate-200 active:bg-slate-100">
+                  <Text className="text-slate-700 font-bold text-sm">Switch to Evening →</Text>
+                </Pressable>
+              )}
+              {currentSlot === 'evening' && buckets.morning.stops.length > 0 && (
+                <Pressable onPress={() => setCurrentSlot('morning')} className="mt-3 px-4 py-2 bg-white rounded-full border border-slate-200 active:bg-slate-100">
+                  <Text className="text-slate-700 font-bold text-sm">← Switch to Morning</Text>
+                </Pressable>
+              )}
             </View>
           }
         />
 
-        <DeliveryModal visible={deliveryModalVisible} stop={activeStop} editedOrder={editedOrder} onClose={() => setDeliveryModalVisible(false)} onAdjust={handleQtyAdjust} onConfirm={handleConfirmDelivery} />
-        {alertConfig && <CustomAlert visible={!!alertConfig} title={alertConfig.title} message={alertConfig.message} confirmText={alertConfig.confirmText} cancelText={alertConfig.cancelText} isDestructive={alertConfig.isDestructive} showCancel={alertConfig.showCancel !== false} onCancel={alertConfig.onCancel} onConfirm={alertConfig.onConfirm} />}
+        <DeliveryModal
+          visible={deliveryModalVisible}
+          stop={activeStop}
+          editedOrder={editedOrder}
+          onClose={() => setDeliveryModalVisible(false)}
+          onAdjust={handleAdjust}
+          onConfirm={confirmDelivery}
+        />
+
+        <CustomAlert visible={!!alertConfig} {...alertConfig} />
       </SafeAreaView>
     </View>
   );
+}
+
+// ==========================================
+// Helpers
+// ==========================================
+
+// Rough "default the picker to what the driver probably wants to see."
+// Before noon → morning, after → evening. They can always tap the other.
+function guessSlot(): Slot {
+  return new Date().getHours() < 14 ? 'morning' : 'evening';
+}
+
+// Convert one manifest fetch result to a SlotBucket. Handles both the
+// success path and the "no route assigned" 404 path uniformly.
+function manifestToBucket(res: PromiseSettledResult<any>): SlotBucket {
+  if (res.status !== 'fulfilled' || !res.value?.stops?.length) {
+    return { stops: [], routeId: '' };
+  }
+  const data = res.value;
+  const stops: Stop[] = data.stops.map((backendStop: any) => {
+    const expected: OrderData = {};
+    Object.entries(backendStop.deliveryOrder || {}).forEach(([key, value]) => {
+      if (typeof value === 'number' && value > 0) {
+        const cleanKey = key.replace('Quantity', '');
+        expected[cleanKey] = value;
+      }
+    });
+    const actual: OrderData = {};
+    if (backendStop.status === 'DELIVERED') {
+      Object.entries(backendStop.actualOrder || {}).forEach(([key, value]) => {
+        if (typeof value === 'number' && value > 0) {
+          const cleanKey = key.replace('Quantity', '');
+          actual[cleanKey] = value;
+        }
+      });
+    }
+    return {
+      id: backendStop.id,
+      customer: backendStop.customer || backendStop.name || 'Unknown',
+      address: backendStop.houseAddress || 'No Address provided',
+      phone: backendStop.phoneNumber || '',
+      status: backendStop.status || 'PENDING',
+      expectedOrder: expected,
+      actualOrder: backendStop.status === 'DELIVERED' ? actual : undefined,
+    };
+  });
+  return { stops, routeId: data.routeId || '' };
 }

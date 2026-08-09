@@ -26,6 +26,8 @@ import {
   Truck,
   IndianRupee,
   PackageCheck,
+  Settings,
+  ClipboardList,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
@@ -237,21 +239,29 @@ export default function AdminDashboard() {
             />
           }
         >
-          {/* Header */}
+          {/* Header: greeting on the left, action buttons grouped on the right. */}
           <View className="flex-row justify-between items-center px-6 pt-5 pb-5">
-            <View>
+            <View className="flex-1">
               <Text className="text-base font-medium text-slate-500 tracking-wide">{greeting()}</Text>
               <Text className="text-3xl font-black text-slate-900 tracking-tighter mt-1">Admin</Text>
             </View>
-            <Pressable
-              onPress={() => go('/admin/customers')}
-              className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
-            >
-              <Bell color="#0F172A" size={24} strokeWidth={2} />
-              {(flaggedIssues.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
-                <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
-              )}
-            </Pressable>
+            <View className="flex-row items-center gap-2">
+              <Pressable
+                onPress={() => go('/admin/customers')}
+                className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
+              >
+                <Bell color="#0F172A" size={22} strokeWidth={2} />
+                {(flaggedIssues.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
+                  <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
+                )}
+              </Pressable>
+              <Pressable
+                onPress={() => go('/admin/settings')}
+                className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
+              >
+                <Settings color="#0F172A" size={22} strokeWidth={2} />
+              </Pressable>
+            </View>
           </View>
 
           {loading ? (
@@ -270,6 +280,30 @@ export default function AdminDashboard() {
                     <Text className="text-slate-400 text-xs mt-1">Pull down to retry.</Text>
                   </View>
                 )}
+              </View>
+
+              {/* Delivery Logs entry — sits directly under the progress hero
+                  because it's the "fix what's broken" surface. If a stop is
+                  stuck or a sync failure is pending, this is the door. */}
+              <View className="px-5 mb-4">
+                <Pressable
+                  onPress={() => go('/admin/delivery-logs')}
+                  className="bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-between active:bg-slate-50"
+                  style={Platform.OS === 'android' ? { elevation: 1 } : { shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 6 }}
+                >
+                  <View className="flex-row items-center gap-3 flex-1">
+                    <View className="w-10 h-10 rounded-2xl bg-slate-100 items-center justify-center">
+                      <ClipboardList size={18} color="#0F172A" strokeWidth={2.2} />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="font-black text-slate-900 text-sm">Delivery Logs</Text>
+                      <Text className="text-xs text-slate-500 font-medium mt-0.5">
+                        Review, edit, or fix any log
+                      </Text>
+                    </View>
+                  </View>
+                  <ChevronRight size={16} color="#CBD5E1" />
+                </Pressable>
               </View>
 
               {/* Stat grid */}

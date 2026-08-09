@@ -11,6 +11,20 @@ const BACKEND_URL =
     ? "http://localhost:3000"
     : "http://192.168.29.84:3000");
 
+// ApiError extends Error so `throw` still works everywhere, but carries the
+// HTTP status code so callers (like the offline queue) can tell a
+// permanent-fail 4xx from a retryable 5xx. Network failures set status = 0.
+export class ApiError extends Error {
+  status: number;
+  body: any;
+  constructor(message: string, status: number, body: any) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 export const api = {
   async request(endpoint: string, options: RequestInit = {}) {
     // 1. Grab the active session directly from Supabase
@@ -28,11 +42,19 @@ export const api = {
       headers["Authorization"] = `Bearer ${session.access_token}`;
     }
 
-    // 3. Make the fetch call to your Go backend
-    const response = await fetch(`${BACKEND_URL}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    // 3. Make the fetch call to your Go backend. Wrap in try/catch so we
+    //    can attach status=0 to network-level failures instead of throwing
+    //    a bare TypeError that has no shape the queue can reason about.
+    let response: Response;
+    try {
+      response = await fetch(`${BACKEND_URL}${endpoint}`, {
+        ...options,
+        headers,
+      });
+    } catch (netErr: any) {
+      // fetch itself failed — no server contact at all.
+      throw new ApiError(netErr?.message || "Network request failed", 0, null);
+    }
 
     const text = await response.text();
     let data: any = {};
@@ -47,9 +69,8 @@ export const api = {
     }
 
     if (!response.ok) {
-      throw new Error(
-        data.error || data.message || `API Error: ${response.status}`,
-      );
+      const msg = data.error || data.message || `API Error: ${response.status}`;
+      throw new ApiError(msg, response.status, data);
     }
 
     return data;

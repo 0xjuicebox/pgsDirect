@@ -1,6 +1,5 @@
 // src/utils/deliveryQueue.ts
 //
-//
 // Offline-first queue for driver delivery submissions.
 //
 // Design (mirrors the backend decisions):
@@ -24,7 +23,7 @@
 // happen in practice — one driver × ~40 stops × 2 slots), split by day.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 const QUEUE_KEY = "pgs.deliveryQueue.v1";
 const TIMEOUT_MS = 48 * 60 * 60 * 1000; // 48h
@@ -161,10 +160,8 @@ async function tryOne(item: QueuedItem): Promise<Outcome> {
     await removeFromQueue(item.tempId);
     return "synced";
   } catch (err: any) {
-    // api.ts throws an Error whose message includes the status code as
-    // "HTTP 4xx: ..." — we look at that to decide permanent vs transient.
-    // If your api.ts uses a different shape, adjust extractStatus below.
-    const status = extractStatus(err);
+    // api.ts throws ApiError with .status = HTTP code, or 0 for network fail.
+    const status = err instanceof ApiError ? err.status : 0;
     const message = err?.message || "Unknown error";
 
     if (status >= 400 && status < 500) {
@@ -174,7 +171,7 @@ async function tryOne(item: QueuedItem): Promise<Outcome> {
       return "reported";
     }
 
-    // Transient. Check 48h ceiling first.
+    // Transient (5xx or network). Check 48h ceiling first.
     if (Date.now() - item.firstAttemptAt >= TIMEOUT_MS) {
       await reportFailure(item, message, "TIMED_OUT_48H");
       await removeFromQueue(item.tempId);
@@ -217,7 +214,7 @@ async function removeFromQueue(tempId: string): Promise<void> {
 }
 
 // Fire-and-forget: if this report itself fails, the row already gave up
-// locally; the backend can only learn about it via retry on next drain.
+// locally. See NOTE below on why we don't re-queue it.
 async function reportFailure(
   item: QueuedItem,
   errorMessage: string,
@@ -231,21 +228,16 @@ async function reportFailure(
     });
   } catch (err) {
     console.log(
-      "sync-failures POST failed; will retry via natural queue drain later",
+      "sync-failures POST failed; item already dropped from local queue",
       err,
     );
     // NOTE: we don't re-queue the failure itself. Rationale: if the backend
-    // is down enough that /driver/sync-failures also fails, the original
-    // delivery attempt will also still be failing. This is intentionally
-    // fire-and-forget to avoid an infinite "failure to report the failure"
-    // loop. If this becomes a real issue in practice, add a second queue
-    // for failure reports with a max size and simple retry.
+    // is unreachable enough that /driver/sync-failures also fails, the
+    // original delivery attempt was also failing — the driver already knows
+    // something is off. Re-queuing would risk an infinite "failure to report
+    // the failure" loop. Trade-off: in a full 48h outage, a permanently-
+    // rejected payload gets dropped without the admin ever hearing about it.
+    // Acceptable for v1. If it becomes a real issue, add a separate
+    // bounded-size failure-report queue.
   }
-}
-
-function extractStatus(err: any): number {
-  // Your api.ts throws Error(`HTTP ${status}: ${body}`) for non-2xx.
-  // Adjust this if your shape differs.
-  const m = /HTTP\s+(\d{3})/.exec(err?.message || "");
-  return m ? parseInt(m[1], 10) : 0;
 }
