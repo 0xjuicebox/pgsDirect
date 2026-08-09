@@ -170,7 +170,7 @@ export default function AdminDashboard() {
   const fetchDashboardData = useCallback(async () => {
     // allSettled, not all — one endpoint failing shouldn't blank the whole screen.
     const [statsRes, issuesRes] = await Promise.allSettled([
-      api.get('/admin/stats'),
+      api.get('/stats'),
       api.get('/delivery/flagged?limit=10'),
     ]);
 

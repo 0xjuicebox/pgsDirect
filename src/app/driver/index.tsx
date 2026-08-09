@@ -595,11 +595,15 @@ export default function DriverManifestScreen() {
   };
 
   const submitStop = async (stop: Stop, status: Stop['status'], order?: OrderData) => {
-    // Convert our compact {milk:2} shape to the backend's actualOrder shape.
+    // Convert our compact {milk: 2000} shape back to the backend's
+    // {milkQuantity: 2000} shape. The manifest parser strips the "Quantity"
+    // suffix for display; customer.Order on the Go side still expects it,
+    // and unknown JSON keys are silently dropped — so skipping this
+    // conversion writes zeros for every product.
     const actualOrder: Record<string, number> = {};
     if (status === 'DELIVERED' && order) {
       Object.entries(order).forEach(([k, v]) => {
-        if (v > 0) actualOrder[k] = v;
+        if (v > 0) actualOrder[`${k}Quantity`] = v;
       });
     }
 
