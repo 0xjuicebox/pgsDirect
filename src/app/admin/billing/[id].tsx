@@ -16,7 +16,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import {
   ChevronLeft, Sun, Moon, CircleCheck, CircleSlash, CircleAlert,
-  X, Banknote, Smartphone, Clock, Share2, FileText,
+  X, Banknote, Smartphone, Clock, Share2, FileText, RefreshCw,
 } from 'lucide-react-native';
 
 import { api } from '../../../utils/api';
@@ -114,6 +114,7 @@ export default function CustomerBillScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showPayModal, setShowPayModal] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const fetchBill = useCallback(async () => {
     // Two sources: the per-day log comes from /billing/customer/{id}, but the
@@ -154,6 +155,42 @@ export default function CustomerBillScreen() {
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to update status');
     }
+  };
+
+  // Rebuilds a frozen invoice from the delivery logs as they stand now. Used
+  // after correcting a log that had already been invoiced — Generate uses
+  // ON CONFLICT DO NOTHING and will never overwrite an existing invoice, so
+  // without this the bill silently stays wrong.
+  const handleRegenerate = () => {
+    if (!tally?.invoiceId) return;
+    Alert.alert(
+      'Recalculate this invoice?',
+      "The bill will be rebuilt from the customer's delivery logs as they stand now. Use this after correcting a log.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Recalculate',
+          onPress: async () => {
+            setRegenerating(true);
+            try {
+              const res = await api.post(`/billing/invoices/${tally.invoiceId}/regenerate`, {});
+              if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert(
+                res.changed ? 'Invoice updated' : 'No change',
+                res.changed
+                  ? `${rupees(res.previousTotal)} → ${rupees(res.newTotal)}. The customer has been notified.`
+                  : 'The recalculated total matches what was already on the invoice.'
+              );
+              fetchBill();
+            } catch (err: any) {
+              Alert.alert('Could not recalculate', err.message || 'Please try again.');
+            } finally {
+              setRegenerating(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Builds the message a customer actually receives when they dispute a bill.
@@ -268,10 +305,26 @@ export default function CustomerBillScreen() {
             {tally?.isFinalized && (
               <Pressable
                 onPress={() => setShowPayModal(true)}
-                className="mx-5 mb-6 bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-center gap-2 active:bg-slate-50"
+                className="mx-5 mb-3 bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-center gap-2 active:bg-slate-50"
               >
                 <Banknote size={18} color="#0F172A" />
                 <Text className="font-black text-slate-800 text-sm">Update Payment Status</Text>
+              </Pressable>
+            )}
+
+            {/* Recalculate — only for a frozen, still-unpaid invoice. The
+                backend refuses to rewrite a settled bill, so offering it on a
+                paid invoice would just produce an error. */}
+            {tally?.isFinalized && tally?.invoiceStatus === 'PENDING' && (
+              <Pressable
+                onPress={handleRegenerate}
+                disabled={regenerating}
+                className="mx-5 mb-6 bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-center gap-2 active:bg-slate-50"
+              >
+                {regenerating
+                  ? <ActivityIndicator size="small" color="#0F172A" />
+                  : <RefreshCw size={17} color="#0F172A" />}
+                <Text className="font-black text-slate-800 text-sm">Recalculate from delivery logs</Text>
               </Pressable>
             )}
 

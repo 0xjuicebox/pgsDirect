@@ -9,6 +9,7 @@ import {
   Modal,
   Pressable,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -28,22 +29,42 @@ import {
   PackageCheck,
   Settings,
   ClipboardList,
+  GitPullRequest,
+  Sun,
+  Moon,
+  Minus,
+  Plus,
+  RouteOff,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
 import { api } from '../../utils/api';
 
 // --- TYPES ---
+
+// Mirrors delivery.FlaggedDelivery. quantities/dayTotal were added so the
+// admin can correct the bill from here — without them, clearing a flag and
+// fixing the charge were two separate journeys and the second rarely happened.
 type FlaggedDelivery = {
   id: string;
   customerId: string;
   customerName: string;
   phoneNumber: string;
   houseAddress: string;
+  slot: 'morning' | 'evening';
   deliveryDate: string;
   status: string;
   customerFeedback: string;
   updatedAt: string;
+  quantities: Record<string, number>;
+  dayTotal: number;
+};
+
+// Mirrors stats.UnroutedSlot.
+type UnroutedSlot = {
+  customerId: string;
+  customerName: string;
+  slot: 'morning' | 'evening';
 };
 
 // Mirrors stats.AdminStats on the Go side.
@@ -59,10 +80,27 @@ type AdminStats = {
   completionPct: number;
   pendingApprovals: number;
   flaggedCount: number;
+  unroutedSlots: UnroutedSlot[];
   activeCustomers: number;
   monthRevenue: number;
   monthLabel: string;
 };
+
+const PRODUCTS = [
+  { key: 'milk', label: 'Milk', step: 500 },
+  { key: 'curd', label: 'Curd', step: 500 },
+  { key: 'butter', label: 'Butter', step: 250 },
+  { key: 'ghee', label: 'Ghee', step: 250 },
+  { key: 'lassi', label: 'Buttermilk', step: 500 },
+  { key: 'paneer', label: 'Paneer', step: 250 },
+  { key: 'jaggery', label: 'Jaggery', step: 250 },
+  { key: 'khand', label: 'Khand', step: 250 },
+  { key: 'oil', label: 'Oil', step: 500 },
+  { key: 'atta', label: 'Atta', step: 1000 },
+  { key: 'burfi', label: 'Burfi', step: 250 },
+];
+
+const LITRE = new Set(['milk', 'curd', 'lassi', 'oil']);
 
 // --- HELPERS ---
 function greeting() {
@@ -76,6 +114,13 @@ function rupees(n: number) {
   if (n >= 100000) return '₹' + (n / 100000).toFixed(1) + 'L';
   if (n >= 1000) return '₹' + (n / 1000).toFixed(1) + 'k';
   return '₹' + Math.round(n);
+}
+
+function fmtQty(v: number, product: string) {
+  if (!v) return '—';
+  const litre = LITRE.has(product);
+  if (v < 1000) return `${v} ${litre ? 'ml' : 'g'}`;
+  return `${parseFloat((v / 1000).toFixed(2))} ${litre ? 'L' : 'kg'}`;
 }
 
 // --- COMPONENTS ---
@@ -99,6 +144,88 @@ const StatCard = ({ label, value, sub, icon: Icon, iconColor, iconBg, onPress }:
     {sub ? <Text className="text-[11px] font-medium text-slate-400 mt-1">{sub}</Text> : null}
   </Pressable>
 );
+
+// Shared shape for the navigation cards under the hero.
+const EntryCard = ({ icon: Icon, title, subtitle, onPress, badge }: any) => (
+  <Pressable
+    onPress={onPress}
+    className="bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-between active:bg-slate-50"
+    style={Platform.OS === 'android' ? { elevation: 1 } : { shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 6 }}
+  >
+    <View className="flex-row items-center gap-3 flex-1">
+      <View className="w-10 h-10 rounded-2xl bg-slate-100 items-center justify-center">
+        <Icon size={18} color="#0F172A" strokeWidth={2.2} />
+      </View>
+      <View className="flex-1">
+        <Text className="font-black text-slate-900 text-sm">{title}</Text>
+        <Text className="text-xs text-slate-500 font-medium mt-0.5">{subtitle}</Text>
+      </View>
+    </View>
+    {badge ? (
+      <View className="bg-amber-100 px-2 py-1 rounded-lg mr-1">
+        <Text className="text-[11px] font-black text-amber-800">{badge}</Text>
+      </View>
+    ) : null}
+    <ChevronRight size={16} color="#CBD5E1" />
+  </Pressable>
+);
+
+// Slots that will never be delivered until someone assigns a route.
+//
+// Deliberately framed as a worklist rather than an alarm. Approving one slot
+// and leaving the other for later is a legitimate workflow — you might have
+// morning capacity but no evening driver yet — so this may sit non-zero for
+// perfectly good reasons. Naming the customers keeps it actionable instead
+// of nagging; a bare counter would just become wallpaper.
+const UnroutedCard = ({ slots, onPressCustomer }: { slots: UnroutedSlot[]; onPressCustomer: (id: string) => void }) => {
+  const [open, setOpen] = useState(false);
+  if (!slots.length) return null;
+
+  return (
+    <View className="bg-amber-50 border border-amber-200 rounded-2xl overflow-hidden">
+      <Pressable onPress={() => setOpen(!open)} className="p-4 flex-row items-center gap-3 active:bg-amber-100/50">
+        <View className="w-10 h-10 rounded-2xl bg-amber-100 items-center justify-center">
+          <RouteOff size={18} color="#B45309" strokeWidth={2.2} />
+        </View>
+        <View className="flex-1">
+          <Text className="font-black text-amber-900 text-sm">
+            {slots.length} {slots.length === 1 ? 'slot is' : 'slots are'} waiting for a route
+          </Text>
+          <Text className="text-xs text-amber-800/80 font-medium mt-0.5">
+            These deliveries won't happen until one is assigned
+          </Text>
+        </View>
+        <ChevronRight
+          size={16}
+          color="#B45309"
+          style={{ transform: [{ rotate: open ? '90deg' : '0deg' }] }}
+        />
+      </Pressable>
+
+      {open && (
+        <View className="px-4 pb-3">
+          {slots.map((s) => {
+            const SlotIcon = s.slot === 'evening' ? Moon : Sun;
+            return (
+              <Pressable
+                key={s.customerId + s.slot}
+                onPress={() => onPressCustomer(s.customerId)}
+                className="bg-white/70 rounded-xl px-3.5 py-3 mb-2 flex-row items-center gap-2.5 active:bg-white"
+              >
+                <SlotIcon size={13} color={s.slot === 'evening' ? '#6366F1' : '#F59E0B'} />
+                <Text className="font-bold text-amber-900 text-sm flex-1" numberOfLines={1}>
+                  {s.customerName}
+                </Text>
+                <Text className="text-[11px] font-bold text-amber-700 capitalize">{s.slot}</Text>
+                <ChevronRight size={13} color="#B45309" />
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+};
 
 // Today's shift progress. This is the number an operations person actually
 // opens the app to see, so it gets the most visual weight on the screen.
@@ -154,24 +281,247 @@ const ProgressHero = ({ stats }: { stats: AdminStats }) => {
   );
 };
 
+// -------------------------------------------------------------------------
+// Resolution sheet
+//
+// The old version had a single "Mark as Resolved" button that cleared the
+// flag and nothing else — so the most common complaint, "an item was
+// missing", ended with the flag gone and the customer still billed for it.
+// Correcting the quantities IS the bill fix, so it lives here rather than
+// three screens away.
+// -------------------------------------------------------------------------
+
+const ResolveSheet = ({ issue, onClose, onDone }: any) => {
+  const [qty, setQty] = useState<Record<string, number>>({});
+  const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (issue) {
+      setQty({ ...(issue.quantities || {}) });
+      setNote('');
+    }
+  }, [issue]);
+
+  if (!issue) return null;
+
+  const changed = PRODUCTS.some((p) => (qty[p.key] || 0) !== (issue.quantities?.[p.key] || 0));
+
+  // Only products that were actually recorded are shown by default —
+  // a driver who delivered milk and curd shouldn't present eleven rows.
+  const recorded = PRODUCTS.filter((p) => (issue.quantities?.[p.key] || 0) > 0 || (qty[p.key] || 0) > 0);
+
+  const submit = async (withCorrection: boolean) => {
+    setSaving(true);
+    try {
+      const body: any = {};
+      if (withCorrection) body.quantities = qty;
+      if (note.trim()) body.note = note.trim();
+
+      const res = await api.post(`/delivery/${issue.id}/resolve`, body);
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // The month may already be invoiced, in which case that frozen invoice
+      // is now stale. We don't rewrite it automatically — a paid bill must
+      // never change silently — so the admin is asked.
+      if (res?.invoiceNeedsRegeneration) {
+        const paid = res.invoiceStatus && String(res.invoiceStatus).startsWith('PAID');
+        Alert.alert(
+          'This month is already invoiced',
+          paid
+            ? `The bill for this month is marked ${res.invoiceStatus === 'PAID_CASH' ? 'paid by cash' : 'paid online'}. Reset it to Pending on the billing screen if the amount genuinely needs to change.`
+            : "Their invoice still shows the old amount. Open their bill and tap Recalculate to bring it in line.",
+          [{ text: 'Got it' }]
+        );
+      } else if (res?.changed) {
+        Alert.alert(
+          'Corrected',
+          `Bill adjusted by ${rupees(Math.abs(res.amountAdjusted))}. The customer has been notified on WhatsApp.`
+        );
+      }
+
+      onDone();
+      onClose();
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to resolve issue');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const SlotIcon = issue.slot === 'evening' ? Moon : Sun;
+
+  return (
+    <Modal visible={!!issue} transparent animationType="slide" onRequestClose={onClose}>
+      <View className="flex-1 justify-end bg-slate-900/40">
+        <Pressable className="absolute inset-0" onPress={onClose} />
+        <View className="bg-white rounded-t-[32px] px-6 pt-6 pb-8 max-h-[88%]" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
+          <View className="w-10 h-1.5 bg-slate-200 rounded-full self-center mb-5" />
+
+          <View className="flex-row justify-between items-start mb-4">
+            <View className="flex-1 pr-3">
+              <Text className="text-xl font-black text-slate-900 tracking-tight">{issue.customerName}</Text>
+              <View className="flex-row items-center gap-2 mt-1">
+                <SlotIcon size={12} color={issue.slot === 'evening' ? '#6366F1' : '#F59E0B'} />
+                <Text className="text-slate-500 text-xs font-bold capitalize">{issue.slot}</Text>
+                <Text className="text-slate-300 text-xs">·</Text>
+                <Text className="text-slate-500 text-xs font-semibold">
+                  {new Date(issue.deliveryDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                </Text>
+                <Text className="text-slate-300 text-xs">·</Text>
+                <Text className="text-slate-500 text-xs font-semibold">{rupees(issue.dayTotal)}</Text>
+              </View>
+            </View>
+            <Pressable onPress={onClose} className="h-9 w-9 bg-slate-50 rounded-full items-center justify-center border border-slate-100 active:bg-slate-100">
+              <X size={16} color="#64748B" />
+            </Pressable>
+          </View>
+
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {/* Complaint */}
+            <View className="bg-red-50 border border-red-100 rounded-2xl p-4 mb-5">
+              <View className="flex-row items-center gap-2 mb-2">
+                <AlertCircle size={13} color="#DC2626" />
+                <Text className="text-[11px] font-black text-red-800 uppercase tracking-wider">What they told us</Text>
+              </View>
+              <Text className="text-slate-800 font-medium leading-5 text-sm">{issue.customerFeedback}</Text>
+              <View className="flex-row items-center gap-1.5 mt-3">
+                <Phone size={11} color="#94A3B8" />
+                <Text className="text-slate-500 text-xs font-medium">{issue.phoneNumber}</Text>
+              </View>
+              {!!issue.houseAddress && (
+                <View className="flex-row items-start gap-1.5 mt-1">
+                  <MapPin size={11} color="#94A3B8" style={{ marginTop: 2 }} />
+                  <Text className="text-slate-500 text-xs font-medium flex-1">{issue.houseAddress}</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Correction */}
+            <Text className="text-[11px] font-black text-slate-400 uppercase tracking-wider mb-1">
+              What was actually delivered?
+            </Text>
+            <Text className="text-slate-500 text-xs mb-3 leading-4">
+              Adjust anything that's wrong. This is what the customer gets billed for.
+            </Text>
+
+            <View className="bg-slate-50 rounded-2xl border border-slate-100 px-4 mb-4">
+              {recorded.length === 0 ? (
+                <Text className="text-slate-400 text-sm py-4 text-center">Nothing was recorded for this delivery.</Text>
+              ) : (
+                recorded.map((p, i) => {
+                  const current = qty[p.key] || 0;
+                  const original = issue.quantities?.[p.key] || 0;
+                  const isChanged = current !== original;
+                  return (
+                    <View
+                      key={p.key}
+                      className={`flex-row items-center justify-between py-3 ${i < recorded.length - 1 ? 'border-b border-slate-200/70' : ''}`}
+                    >
+                      <View className="flex-1">
+                        <Text className="font-bold text-slate-700 text-sm">{p.label}</Text>
+                        {isChanged && (
+                          <Text className="text-[11px] text-slate-400 font-medium mt-0.5">
+                            was {fmtQty(original, p.key)}
+                          </Text>
+                        )}
+                      </View>
+                      <View className="flex-row items-center gap-2">
+                        <Pressable
+                          onPress={() => setQty((q) => ({ ...q, [p.key]: Math.max(0, (q[p.key] || 0) - p.step) }))}
+                          disabled={current === 0}
+                          className={`h-8 w-8 rounded-lg items-center justify-center border ${current === 0 ? 'border-slate-100 bg-slate-50 opacity-40' : 'border-slate-200 bg-white active:bg-slate-100'}`}
+                        >
+                          <Minus size={14} color="#334155" />
+                        </Pressable>
+                        <Text className={`w-[70px] text-center text-sm font-black ${isChanged ? 'text-emerald-700' : 'text-slate-800'}`}>
+                          {fmtQty(current, p.key)}
+                        </Text>
+                        <Pressable
+                          onPress={() => setQty((q) => ({ ...q, [p.key]: (q[p.key] || 0) + p.step }))}
+                          className="h-8 w-8 rounded-lg items-center justify-center border border-slate-200 bg-white active:bg-slate-100"
+                        >
+                          <Plus size={14} color="#334155" />
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+
+            <TextInput
+              value={note}
+              onChangeText={setNote}
+              placeholder="Internal note (optional) — e.g. driver confirmed shortfall"
+              multiline
+              maxLength={200}
+              className="bg-white border border-slate-200 rounded-2xl px-4 py-3 min-h-[60px] text-sm text-slate-700 mb-4"
+              style={{ textAlignVertical: 'top' }}
+            />
+          </ScrollView>
+
+          {/* Actions */}
+          {changed ? (
+            <Pressable
+              onPress={() => submit(true)}
+              disabled={saving}
+              className="bg-emerald-600 h-14 rounded-2xl items-center justify-center flex-row gap-2 active:opacity-90"
+            >
+              {saving ? <ActivityIndicator color="white" /> : (
+                <>
+                  <CheckCircle2 size={18} color="white" />
+                  <Text className="text-white text-base font-black tracking-wide">Correct bill & resolve</Text>
+                </>
+              )}
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={() => submit(false)}
+              disabled={saving}
+              className="bg-slate-900 h-14 rounded-2xl items-center justify-center flex-row gap-2 active:opacity-90"
+            >
+              {saving ? <ActivityIndicator color="white" /> : (
+                <>
+                  <CheckCircle2 size={18} color="white" />
+                  <Text className="text-white text-base font-black tracking-wide">Resolve — nothing to change</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+
+          {changed && (
+            <Text className="text-center text-slate-400 text-[11px] font-medium mt-2.5">
+              The customer will be told what changed and by how much
+            </Text>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+// -------------------------------------------------------------------------
+// Screen
+// -------------------------------------------------------------------------
+
 export default function AdminDashboard() {
   const router = useRouter();
 
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [flaggedIssues, setFlaggedIssues] = useState<FlaggedDelivery[]>([]);
+  const [changeCount, setChangeCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Resolution Modal State
   const [selectedIssue, setSelectedIssue] = useState<FlaggedDelivery | null>(null);
-  const [showResolveModal, setShowResolveModal] = useState(false);
-  const [resolving, setResolving] = useState(false);
 
   const fetchDashboardData = useCallback(async () => {
     // allSettled, not all — one endpoint failing shouldn't blank the whole screen.
-    const [statsRes, issuesRes] = await Promise.allSettled([
+    const [statsRes, issuesRes, changesRes] = await Promise.allSettled([
       api.get('/stats'),
       api.get('/delivery/flagged?limit=10'),
+      api.get('/update/changes'),
     ]);
 
     if (statsRes.status === 'fulfilled') setStats(statsRes.value);
@@ -179,6 +529,9 @@ export default function AdminDashboard() {
 
     if (issuesRes.status === 'fulfilled') setFlaggedIssues(issuesRes.value || []);
     else console.log('Flagged failed:', issuesRes.reason?.message);
+
+    if (changesRes.status === 'fulfilled') setChangeCount((changesRes.value || []).length);
+    else console.log('Changes failed:', changesRes.reason?.message);
 
     setLoading(false);
     setRefreshing(false);
@@ -196,21 +549,6 @@ export default function AdminDashboard() {
     }, [fetchDashboardData])
   );
 
-  const handleResolveIssue = async () => {
-    if (!selectedIssue) return;
-    setResolving(true);
-    try {
-      await api.post(`/delivery/${selectedIssue.id}/resolve`, {});
-      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowResolveModal(false);
-      fetchDashboardData();
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to resolve issue');
-    } finally {
-      setResolving(false);
-    }
-  };
-
   const formatDate = (dateString: string) => {
     if (!dateString) return 'Unknown Date';
     const d = new Date(dateString);
@@ -221,6 +559,8 @@ export default function AdminDashboard() {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(path as any);
   };
+
+  const unrouted = stats?.unroutedSlots || [];
 
   return (
     <View className="flex-1 bg-slate-50">
@@ -251,7 +591,7 @@ export default function AdminDashboard() {
                 className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
               >
                 <Bell color="#0F172A" size={22} strokeWidth={2} />
-                {(flaggedIssues.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
+                {(flaggedIssues.length > 0 || changeCount > 0 || unrouted.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
                   <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
                 )}
               </Pressable>
@@ -282,28 +622,34 @@ export default function AdminDashboard() {
                 )}
               </View>
 
-              {/* Delivery Logs entry — sits directly under the progress hero
-                  because it's the "fix what's broken" surface. If a stop is
-                  stuck or a sync failure is pending, this is the door. */}
+              {/* Unrouted slots — above the other queues because it's the one
+                  failure nobody would otherwise notice: the customer is
+                  active, nothing errors, and the delivery just never happens. */}
+              {unrouted.length > 0 && (
+                <View className="px-5 mb-2">
+                  <UnroutedCard slots={unrouted} onPressCustomer={(id) => go(`/admin/customers/${id}`)} />
+                </View>
+              )}
+
+              {/* Work queues. These sit directly under the hero because they're
+                  the "something needs a human" surfaces. */}
+              <View className="px-5 mb-2">
+                <EntryCard
+                  icon={GitPullRequest}
+                  title="Change Requests"
+                  subtitle="Customer profile & order edits awaiting review"
+                  badge={changeCount > 0 ? changeCount : null}
+                  onPress={() => go('/admin/change-requests')}
+                />
+              </View>
+
               <View className="px-5 mb-4">
-                <Pressable
+                <EntryCard
+                  icon={ClipboardList}
+                  title="Delivery Logs"
+                  subtitle="Review, edit, or fix any log"
                   onPress={() => go('/admin/delivery-logs')}
-                  className="bg-white border border-slate-200 rounded-2xl p-4 flex-row items-center justify-between active:bg-slate-50"
-                  style={Platform.OS === 'android' ? { elevation: 1 } : { shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 6 }}
-                >
-                  <View className="flex-row items-center gap-3 flex-1">
-                    <View className="w-10 h-10 rounded-2xl bg-slate-100 items-center justify-center">
-                      <ClipboardList size={18} color="#0F172A" strokeWidth={2.2} />
-                    </View>
-                    <View className="flex-1">
-                      <Text className="font-black text-slate-900 text-sm">Delivery Logs</Text>
-                      <Text className="text-xs text-slate-500 font-medium mt-0.5">
-                        Review, edit, or fix any log
-                      </Text>
-                    </View>
-                  </View>
-                  <ChevronRight size={16} color="#CBD5E1" />
-                </Pressable>
+                />
               </View>
 
               {/* Stat grid */}
@@ -371,121 +717,55 @@ export default function AdminDashboard() {
                     <Text className="text-slate-500 text-sm mt-1">No customer complaints pending.</Text>
                   </View>
                 ) : (
-                  flaggedIssues.map((issue) => (
-                    <Pressable
-                      key={issue.id}
-                      onPress={() => {
-                        setSelectedIssue(issue);
-                        setShowResolveModal(true);
-                      }}
-                      className="bg-white rounded-3xl p-4 border border-red-100 flex-row items-center gap-4 mb-3 active:bg-slate-50"
-                      style={
-                        Platform.OS === 'android'
-                          ? { elevation: 2 }
-                          : { shadowColor: '#EF4444', shadowOpacity: 0.05, shadowRadius: 8 }
-                      }
-                    >
-                      <View className="w-12 h-12 rounded-full bg-red-50 justify-center items-center">
-                        <AlertCircle color="#EF4444" size={24} strokeWidth={2.5} />
-                      </View>
-                      <View className="flex-1">
-                        <Text className="text-base font-black text-slate-900 mb-1">
-                          {issue.customerName} reported an issue
-                        </Text>
-                        <Text className="text-sm font-medium text-slate-500" numberOfLines={1}>
-                          {issue.customerFeedback}
-                        </Text>
-                      </View>
-                      <ChevronRight color="#94A3B8" size={20} />
-                    </Pressable>
-                  ))
+                  flaggedIssues.map((issue) => {
+                    const SlotIcon = issue.slot === 'evening' ? Moon : Sun;
+                    return (
+                      <Pressable
+                        key={issue.id}
+                        onPress={() => setSelectedIssue(issue)}
+                        className="bg-white rounded-3xl p-4 border border-red-100 flex-row items-center gap-4 mb-3 active:bg-slate-50"
+                        style={
+                          Platform.OS === 'android'
+                            ? { elevation: 2 }
+                            : { shadowColor: '#EF4444', shadowOpacity: 0.05, shadowRadius: 8 }
+                        }
+                      >
+                        <View className="w-12 h-12 rounded-full bg-red-50 justify-center items-center">
+                          <AlertCircle color="#EF4444" size={24} strokeWidth={2.5} />
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-base font-black text-slate-900 mb-0.5">
+                            {issue.customerName}
+                          </Text>
+                          {/* Which delivery this was about. Without the slot a
+                              two-slot customer's complaint was ambiguous. */}
+                          <View className="flex-row items-center gap-1.5 mb-1">
+                            <SlotIcon size={11} color={issue.slot === 'evening' ? '#6366F1' : '#F59E0B'} />
+                            <Text className="text-[11px] font-bold text-slate-500 capitalize">{issue.slot}</Text>
+                            <Text className="text-slate-300 text-[11px]">·</Text>
+                            <Text className="text-[11px] font-semibold text-slate-500">
+                              {formatDate(issue.deliveryDate)}
+                            </Text>
+                          </View>
+                          <Text className="text-sm font-medium text-slate-500" numberOfLines={1}>
+                            {issue.customerFeedback}
+                          </Text>
+                        </View>
+                        <ChevronRight color="#94A3B8" size={20} />
+                      </Pressable>
+                    );
+                  })
                 )}
               </View>
             </>
           )}
         </ScrollView>
 
-        {/* ISSUE RESOLUTION BOTTOM SHEET MODAL */}
-        <Modal
-          visible={showResolveModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowResolveModal(false)}
-        >
-          <View className="flex-1 justify-end bg-slate-900/40">
-            <Pressable className="absolute inset-0" onPress={() => setShowResolveModal(false)} />
-            <View className="bg-white rounded-t-[32px] p-6 pb-10" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
-              <View className="w-10 h-1.5 bg-slate-200 rounded-full self-center mb-6" />
-
-              <View className="flex-row justify-between items-center mb-6">
-                <View className="flex-row items-center gap-3">
-                  <View className="w-10 h-10 rounded-full bg-red-50 justify-center items-center">
-                    <AlertCircle color="#EF4444" size={20} strokeWidth={2.5} />
-                  </View>
-                  <Text className="text-2xl font-black text-slate-800 tracking-tight">Review Issue</Text>
-                </View>
-                <Pressable
-                  onPress={() => setShowResolveModal(false)}
-                  className="h-10 w-10 bg-slate-50 rounded-full items-center justify-center border border-slate-100 active:bg-slate-100"
-                >
-                  <X size={18} color="#64748B" />
-                </Pressable>
-              </View>
-
-              {selectedIssue && (
-                <View className="bg-slate-50 rounded-[24px] p-5 border border-slate-100 mb-8 gap-4">
-                  <View>
-                    <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Customer</Text>
-                    <Text className="text-lg font-black text-slate-800 tracking-tight">{selectedIssue.customerName}</Text>
-                  </View>
-
-                  <View className="flex-row items-center gap-2">
-                    <Phone size={14} color="#64748B" />
-                    <Text className="text-slate-600 font-medium">{selectedIssue.phoneNumber}</Text>
-                  </View>
-
-                  <View className="flex-row items-start gap-2">
-                    <MapPin size={14} color="#64748B" className="mt-0.5" />
-                    <Text className="text-slate-600 font-medium flex-1">{selectedIssue.houseAddress}</Text>
-                  </View>
-
-                  <View className="h-px bg-slate-200 my-2" />
-
-                  <View>
-                    <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                      Complaint Details
-                    </Text>
-                    <View className="bg-white p-4 rounded-xl border border-red-100">
-                      <Text className="text-slate-800 font-semibold leading-5">{selectedIssue.customerFeedback}</Text>
-                    </View>
-                  </View>
-
-                  <View className="flex-row items-center gap-2 mt-2">
-                    <Clock size={14} color="#94A3B8" />
-                    <Text className="text-slate-500 text-xs font-medium">
-                      Reported for delivery on {formatDate(selectedIssue.deliveryDate)}
-                    </Text>
-                  </View>
-                </View>
-              )}
-
-              <Pressable
-                onPress={handleResolveIssue}
-                disabled={resolving}
-                className="bg-slate-900 h-16 rounded-[24px] items-center justify-center flex-row gap-2 active:opacity-90"
-              >
-                {resolving ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <>
-                    <CheckCircle2 size={20} color="white" />
-                    <Text className="text-white text-base font-black tracking-wide">Mark as Resolved</Text>
-                  </>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
+        <ResolveSheet
+          issue={selectedIssue}
+          onClose={() => setSelectedIssue(null)}
+          onDone={fetchDashboardData}
+        />
       </SafeAreaView>
     </View>
   );

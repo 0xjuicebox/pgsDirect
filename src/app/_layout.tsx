@@ -1,4 +1,5 @@
 import "../global.css";
+import '../utils/webAlert';
 import { useEffect, useState } from 'react';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router/react-navigation';
 import { Stack, useRouter, useSegments } from 'expo-router';

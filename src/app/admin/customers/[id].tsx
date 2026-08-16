@@ -17,6 +17,7 @@ import * as Haptics from 'expo-haptics';
 import {
   ArrowLeft, Trash2, Phone, MessageCircle, CheckCircle2, XCircle,
   Sun, Moon, Route as RouteIcon, PlusCircle, Minus, Plus, X, Undo2,
+  ReceiptText,
 } from 'lucide-react-native';
 
 import { api } from '../../../utils/api';
@@ -298,6 +299,18 @@ function SlotPanel({
         </View>
       </View>
 
+      {/* An unrouted slot on an otherwise active customer is the quiet failure
+          mode: they look approved everywhere, but no manifest ever includes
+          this slot, so the delivery silently never happens. */}
+      {!isRouted && (
+        <View className="bg-amber-50 border border-amber-200 rounded-2xl px-3.5 py-3 mb-4 flex-row gap-2.5">
+          <RouteIcon size={14} color="#D97706" />
+          <Text className="text-amber-900 text-xs font-medium flex-1 leading-5">
+            This slot has no route. It won't appear on any driver's manifest until you assign one below.
+          </Text>
+        </View>
+      )}
+
       {/* Routing */}
       <View className="bg-slate-50 rounded-2xl p-4 border border-slate-100 mb-5">
         <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Route Assignment</Text>
@@ -526,6 +539,7 @@ export default function CustomerDetailScreen() {
   const [address, setAddress] = useState('');
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [raisingInvoice, setRaisingInvoice] = useState(false);
 
   const fetchDetails = useCallback(async () => {
     try {
@@ -615,6 +629,42 @@ export default function CustomerDetailScreen() {
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to update status');
     }
+  };
+
+  // Closes out this customer's current month early.
+  //
+  // Needed because the regular Generate refuses the current month (more
+  // deliveries are still coming) while Delete refuses to run while unbilled
+  // deliveries exist — together they'd trap a mid-month leaver for up to 30
+  // days. This freezes what they owe and drops them off every manifest, but
+  // deliberately leaves status alone: admin deactivates once payment lands.
+  const handleFinalInvoice = () => {
+    Alert.alert(
+      'Raise final invoice?',
+      "This bills everything delivered so far this month and stops further deliveries immediately.\n\nThe customer stays active until you deactivate them — do that once payment is settled.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Raise invoice',
+          onPress: async () => {
+            setRaisingInvoice(true);
+            try {
+              const res = await api.post(`/billing/final/${id}`, {});
+              if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert(
+                'Final invoice raised',
+                `₹${Math.round(res.totalAmount)} billed for ${res.month}. Deliveries have stopped. The customer has been sent their bill on WhatsApp.`
+              );
+              fetchDetails();
+            } catch (err: any) {
+              Alert.alert('Could not raise invoice', err.message || 'Please try again.');
+            } finally {
+              setRaisingInvoice(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDelete = () => {
@@ -739,6 +789,27 @@ export default function CustomerDetailScreen() {
           <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">Delivery Slots</Text>
           <SlotPanel customerId={id!} slot="morning" subscription={morningSub} routes={routes} onChanged={fetchDetails} />
           <SlotPanel customerId={id!} slot="evening" subscription={eveningSub} routes={routes} onChanged={fetchDetails} />
+
+          {/* Account lifecycle. Kept at the bottom, away from the everyday
+              editing controls — these are the "customer is leaving" actions. */}
+          <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5 mt-2">Account</Text>
+          <Pressable
+            onPress={handleFinalInvoice}
+            disabled={raisingInvoice}
+            className="bg-white border border-slate-200 rounded-[28px] p-4 flex-row items-center gap-3 mb-4 active:bg-slate-50"
+          >
+            <View className="w-11 h-11 rounded-2xl bg-amber-50 items-center justify-center">
+              {raisingInvoice
+                ? <ActivityIndicator size="small" color="#D97706" />
+                : <ReceiptText size={19} color="#D97706" strokeWidth={2.2} />}
+            </View>
+            <View className="flex-1">
+              <Text className="font-black text-slate-900 text-sm">Raise final invoice</Text>
+              <Text className="text-xs text-slate-500 font-medium mt-0.5 leading-4">
+                For a customer leaving mid-month. Bills what's owed and stops deliveries immediately.
+              </Text>
+            </View>
+          </Pressable>
         </ScrollView>
 
         <RejectModal

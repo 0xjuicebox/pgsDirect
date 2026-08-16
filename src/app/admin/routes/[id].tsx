@@ -17,6 +17,7 @@ import * as Haptics from 'expo-haptics';
 import {
   ArrowLeft, Trash2, Sun, Moon, Truck, ArrowUp, ArrowDown, Save,
   X, ChevronDown, Edit2, IndianRupee, UserX, Check,
+  CalendarClock, XCircle,
 } from 'lucide-react-native';
 
 import { api } from '../../../utils/api';
@@ -45,6 +46,12 @@ type DriverItem = { id: string; name: string; phoneNumber: string; isActive: boo
 type Stop = { id: string; name: string; houseAddress: string; stopOrder: number };
 
 type Slot = 'morning' | 'evening';
+
+// Mirrors route.PendingPriceInfo. Null when nothing is queued.
+type PendingPrices = {
+  prices: { [key: string]: number };
+  effectiveFrom: string;
+};
 
 const PRODUCTS = [
   { key: 'milk', label: 'Milk' },
@@ -155,6 +162,7 @@ export default function RouteDetailScreen() {
   // Pricing
   const [prices, setPrices] = useState<{ [key: string]: string }>({});
   const [savingPrices, setSavingPrices] = useState(false);
+  const [pendingPrices, setPendingPrices] = useState<PendingPrices | null>(null);
 
   // Edit route meta
   const [showEditMeta, setShowEditMeta] = useState(false);
@@ -185,9 +193,22 @@ export default function RouteDetailScreen() {
     }
   }, [id]);
 
+  // The endpoint answers 204 with no body when nothing is queued, which the
+  // api helper surfaces as an empty object — so we check for the field rather
+  // than truthiness of the response.
+  const fetchPendingPrices = useCallback(async () => {
+    try {
+      const res = await api.get(`/route/${id}/prices/pending`);
+      setPendingPrices(res && res.effectiveFrom ? res : null);
+    } catch {
+      setPendingPrices(null);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchRoute();
-  }, [fetchRoute]);
+    fetchPendingPrices();
+  }, [fetchRoute, fetchPendingPrices]);
 
   // Load stops whenever the slot changes (or route loads).
   const fetchStops = useCallback(async () => {
@@ -257,6 +278,10 @@ export default function RouteDetailScreen() {
     }
   };
 
+  // The backend decides whether a price change applies now (route has never
+  // been priced) or is queued for the 1st of next month, and says which in
+  // its response — so the confirmation reports what actually happened rather
+  // than assuming one or the other.
   const handleSavePrices = async () => {
     setSavingPrices(true);
     try {
@@ -265,15 +290,42 @@ export default function RouteDetailScreen() {
         const v = parseFloat(prices[p.key]);
         payload[p.key] = isNaN(v) ? 0 : v;
       });
-      await api.put(`/route/${id}/prices`, { prices: payload });
+      const res = await api.put(`/route/${id}/prices`, { prices: payload });
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Saved', 'Route prices updated. This affects future deliveries only — past bills keep their original prices.');
+      Alert.alert(
+        res?.applied === 'immediately' ? 'Prices set' : 'Price change queued',
+        res?.message || 'Saved.'
+      );
       fetchRoute();
+      fetchPendingPrices();
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to save prices');
     } finally {
       setSavingPrices(false);
     }
+  };
+
+  const handleCancelPending = () => {
+    Alert.alert(
+      'Cancel queued price change?',
+      'Prices will stay as they are. You can queue a new change any time.',
+      [
+        { text: 'Keep it', style: 'cancel' },
+        {
+          text: 'Cancel change',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await api.delete(`/route/${id}/prices/pending`);
+              if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              fetchPendingPrices();
+            } catch (err: any) {
+              Alert.alert('Error', err.message || 'Failed to cancel');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleSaveMeta = async () => {
@@ -451,10 +503,49 @@ export default function RouteDetailScreen() {
             </Pressable>
           )}
 
+          {/* Queued price change, if any. Shown above the editor so it's read
+              before someone starts typing a second change over the top. */}
+          {pendingPrices && (
+            <View className="bg-amber-50 border border-amber-200 rounded-[24px] p-4 mt-2 mb-3">
+              <View className="flex-row items-start gap-3">
+                <CalendarClock size={17} color="#D97706" />
+                <View className="flex-1">
+                  <Text className="font-black text-amber-900 text-sm">Price change queued</Text>
+                  <Text className="text-amber-800 text-xs mt-0.5 leading-5">
+                    Takes effect{' '}
+                    {new Date(pendingPrices.effectiveFrom + 'T00:00:00').toLocaleDateString('en-IN', {
+                      day: 'numeric', month: 'long', year: 'numeric',
+                    })}
+                    . This month's deliveries keep the current prices.
+                  </Text>
+
+                  <View className="bg-white/70 rounded-xl px-3 py-2 mt-2.5">
+                    {PRODUCTS.filter((p) => pendingPrices.prices[p.key] !== undefined).map((p) => (
+                      <View key={p.key} className="flex-row justify-between py-1">
+                        <Text className="text-xs text-amber-900 font-medium">{p.label}</Text>
+                        <Text className="text-xs text-amber-900 font-bold">
+                          ₹{prices[p.key]} → ₹{pendingPrices.prices[p.key]}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+
+                  <Pressable
+                    onPress={handleCancelPending}
+                    className="flex-row items-center gap-1.5 mt-3 self-start active:opacity-70"
+                  >
+                    <XCircle size={13} color="#B45309" />
+                    <Text className="text-amber-800 font-bold text-xs">Cancel this change</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* Pricing — route-wide, NOT per slot */}
           <View className="flex-row items-center gap-2 mt-2 mb-2.5">
             <IndianRupee size={14} color="#94A3B8" />
-            <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">Pricing (applies to whole route)</Text>
+            <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">Pricing — changes apply from next month</Text>
           </View>
           <View className="bg-white rounded-[24px] p-4 border border-slate-200 mb-3">
             {PRODUCTS.map((p) => (
@@ -481,7 +572,9 @@ export default function RouteDetailScreen() {
             {savingPrices ? <ActivityIndicator color="white" /> : (
               <>
                 <Save size={18} color="white" />
-                <Text className="text-white font-black text-sm">Save Prices</Text>
+                <Text className="text-white font-black text-sm">
+                  {pendingPrices ? 'Replace Queued Change' : 'Save Prices'}
+                </Text>
               </>
             )}
           </Pressable>
