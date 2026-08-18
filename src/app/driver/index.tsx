@@ -73,7 +73,7 @@ type ShiftState = {
   date: string;
   morning: ShiftRow | null;
   evening: ShiftRow | null;
-  cutoffs: { morningCutoff: string; eveningCutoff: string };
+  cutoffs: { morningShiftEnd: string; eveningShiftEnd: string };
 };
 
 const UNIT_MAP: Record<string, string> = {

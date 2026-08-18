@@ -35,6 +35,8 @@ import { api } from '../../utils/api';
 type SystemConfig = {
   morningCutoffTime: string;
   eveningCutoffTime: string;
+  morningShiftEndTime: string;
+  eveningShiftEndTime: string;
   complaintCutoffTime: string | null;
 };
 
@@ -251,6 +253,8 @@ export default function AdminSettingsScreen() {
       await api.put('/config', {
         morningCutoffTime: config.morningCutoffTime,
         eveningCutoffTime: config.eveningCutoffTime,
+        morningShiftEndTime: config.morningShiftEndTime,
+        eveningShiftEndTime: config.eveningShiftEndTime,
         // Two mutually-exclusive fields for complaint cutoff, matching the
         // backend's UpdateRequest shape: either send a value or send
         // clearComplaintCutoff=true. See config.go for why.
@@ -293,17 +297,19 @@ export default function AdminSettingsScreen() {
         </View>
 
         <ScrollView contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false} className="px-5">
-          {/* Section: driver cutoffs */}
+          {/* Section: customer order cutoffs
+              When a customer can no longer change TODAY's order for a slot.
+              Enforced in override.Submit; future dates are always editable. */}
           <View className="flex-row items-center gap-2 mt-2 mb-3">
-            <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">Driver shift cutoffs</Text>
+            <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">Customer order cutoffs</Text>
           </View>
 
           <CutoffRow
             icon={Sun}
             iconColor="#F59E0B"
             iconBg="bg-amber-50"
-            label="Morning cutoff"
-            description="Customers can't create or modify overrides for today past this time."
+            label="Morning order cutoff"
+            description="Customers can't change today's morning order past this time. Tomorrow onwards stays open."
             value={config.morningCutoffTime}
             onChange={() => setPicker({ field: 'morningCutoffTime', value: config.morningCutoffTime })}
           />
@@ -312,10 +318,38 @@ export default function AdminSettingsScreen() {
             icon={Moon}
             iconColor="#6366F1"
             iconBg="bg-indigo-50"
-            label="Evening cutoff"
-            description="Active shifts auto-end past this time. Deliveries still work; this only affects the admin dashboard status."
+            label="Evening order cutoff"
+            description="Customers can't change today's evening order past this time. Must be earlier than the evening shift end."
             value={config.eveningCutoffTime}
             onChange={() => setPicker({ field: 'eveningCutoffTime', value: config.eveningCutoffTime })}
+          />
+
+          {/* Section: shift end times
+              Separate from the order cutoffs above. These only flip an ACTIVE
+              shift to AUTO_ENDED so the dashboard's "runs in progress" count
+              settles; drivers can still log deliveries afterwards. */}
+          <View className="flex-row items-center gap-2 mt-6 mb-3">
+            <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">Driver shift end times</Text>
+          </View>
+
+          <CutoffRow
+            icon={Sun}
+            iconColor="#F59E0B"
+            iconBg="bg-amber-50"
+            label="Morning shift ends"
+            description="Morning shifts still running past this are marked auto-ended. Deliveries still work; this only affects the dashboard status."
+            value={config.morningShiftEndTime}
+            onChange={() => setPicker({ field: 'morningShiftEndTime', value: config.morningShiftEndTime })}
+          />
+
+          <CutoffRow
+            icon={Moon}
+            iconColor="#6366F1"
+            iconBg="bg-indigo-50"
+            label="Evening shift ends"
+            description="Evening shifts still running past this are marked auto-ended. Deliveries still work; this only affects the dashboard status."
+            value={config.eveningShiftEndTime}
+            onChange={() => setPicker({ field: 'eveningShiftEndTime', value: config.eveningShiftEndTime })}
           />
 
           {/* Section: complaint window */}
