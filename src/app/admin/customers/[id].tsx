@@ -64,6 +64,19 @@ type CustomerInvoice = {
   lineItems: string[];
 };
 
+// A one-off change a customer made to a specific date's order. Previously
+// invisible to admin entirely — so "I cancelled Tuesday and got milk anyway"
+// was unanswerable.
+type CustomerOverride = {
+  id: string;
+  targetDate: string;
+  slot: 'morning' | 'evening';
+  createdAt: string;
+  items: Record<string, number>;
+  isPause: boolean;
+  isPast: boolean;
+};
+
 type TabKey = 'overview' | 'deliveries' | 'billing';
 
 type RouteItem = { id: string; name: string };
@@ -615,6 +628,73 @@ const DELIVERY_STATUS_STYLE: Record<string, { bg: string; text: string; label: s
 // Deliveries tab
 // -------------------------------------------------------------------------
 
+// UpcomingOverrides shows one-off changes the customer has made to specific
+// future dates.
+//
+// Sits above the delivery history because it answers a different question:
+// history is what happened, this is what is *going* to happen differently.
+// The phone call is almost always about a date that hasn't arrived yet.
+function UpcomingOverrides({ customerId }: { customerId: string }) {
+  const [overrides, setOverrides] = useState<CustomerOverride[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setOverrides((await api.get(`/override/customer/${customerId}?upcoming=true`)) || []);
+      } catch {
+        setOverrides([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [customerId]);
+
+  if (loading || overrides.length === 0) return null;
+
+  return (
+    <View className="bg-white rounded-[28px] border border-slate-200 p-5 mb-4">
+      <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+        Upcoming one-off changes
+      </Text>
+      <View className="gap-2.5">
+        {overrides.map((o) => {
+          const items = Object.entries(o.items || {}).filter(([, q]) => q > 0);
+          return (
+            <View key={o.id} className="bg-slate-50 rounded-2xl p-3.5 border border-slate-100">
+              <View className="flex-row items-center justify-between mb-1">
+                <View className="flex-row items-center gap-2">
+                  {o.slot === 'morning'
+                    ? <Sun size={14} color="#F59E0B" />
+                    : <Moon size={14} color="#6366F1" />}
+                  <Text className="font-black text-slate-800 text-sm">
+                    {new Date(o.targetDate).toLocaleDateString('en-IN', {
+                      weekday: 'short', day: 'numeric', month: 'short',
+                    })}
+                  </Text>
+                </View>
+                {o.isPause && (
+                  <View className="px-2 py-0.5 rounded-md bg-blue-100">
+                    <Text className="text-[10px] font-bold uppercase text-blue-800">Paused</Text>
+                  </View>
+                )}
+              </View>
+              <Text className="text-slate-600 text-xs font-semibold leading-5">
+                {o.isPause
+                  ? 'No delivery on this date'
+                  : items.map(([k, q]) => `${PRODUCT_LABELS[k] || k} ${formatQty(q, k)}`).join('  ·  ')}
+              </Text>
+              <Text className="text-slate-400 text-[11px] font-medium mt-1">
+                Set by the customer on {o.createdAt}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 function DeliveriesTab({ customerId }: { customerId: string }) {
   const now = new Date();
   const [month, setMonth] = useState(
@@ -648,6 +728,8 @@ function DeliveriesTab({ customerId }: { customerId: string }) {
 
   return (
     <View>
+      <UpcomingOverrides customerId={customerId} />
+
       {/* Month stepper */}
       <View className="flex-row items-center justify-between bg-white rounded-2xl border border-slate-200 p-2 mb-4">
         <Pressable

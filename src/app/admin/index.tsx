@@ -35,6 +35,12 @@ import {
   Minus,
   Plus,
   RouteOff,
+  AlertTriangle,
+  Wallet,
+  Ban,
+  Receipt,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
@@ -61,6 +67,55 @@ type FlaggedDelivery = {
 };
 
 // Mirrors stats.UnroutedSlot.
+// Attention groups everything that is quietly wrong — as opposed to today's
+// run, which is loudly right or loudly late. These four were previously
+// invisible: they lived only in payment_events, dunning_runs and a status
+// column, readable by hand-written SQL and nowhere else.
+type PaymentAnomaly = {
+  eventId: string;
+  outcome: 'ALREADY_PAID' | 'AMOUNT_MISMATCH' | 'UNMATCHED';
+  note: string;
+  receivedAt: string;
+  invoiceId: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  amount: number | null;
+};
+
+type StuckChange = {
+  changeId: string;
+  customerId: string;
+  customerName: string;
+  effectiveFrom: string;
+  daysLate: number;
+};
+
+type SuspendedCustomer = {
+  customerId: string;
+  customerName: string;
+  amount: number;
+  billingMonth: string;
+  suspendedOn: string | null;
+};
+
+type DunningStatus = {
+  phase: 'GENERATE' | 'REMIND' | 'SUSPEND';
+  lastRunOn: string;
+  affected: number;
+  note: string;
+  billingMonth: string;
+};
+
+type Attention = {
+  paymentAnomalies: PaymentAnomaly[];
+  stuckChanges: StuckChange[];
+  suspended: SuspendedCustomer[];
+  overdueCount: number;
+  overdueAmount: number;
+  lastDunningRuns: DunningStatus[];
+  billingRunMissed: boolean;
+};
+
 type UnroutedSlot = {
   customerId: string;
   customerName: string;
@@ -81,6 +136,7 @@ type AdminStats = {
   pendingApprovals: number;
   flaggedCount: number;
   unroutedSlots: UnroutedSlot[];
+  attention: Attention;
   activeCustomers: number;
   monthRevenue: number;
   monthLabel: string;
@@ -505,6 +561,285 @@ const ResolveSheet = ({ issue, onClose, onDone }: any) => {
 // Screen
 // -------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// Attention section
+// ---------------------------------------------------------------------------
+
+const rupees = (v: number) => {
+  const n = Math.round(Math.abs(v));
+  const str = String(n);
+  if (str.length <= 3) return (v < 0 ? '-' : '') + str;
+  const last3 = str.slice(-3);
+  let rest = str.slice(0, -3);
+  const parts: string[] = [];
+  while (rest.length > 2) { parts.unshift(rest.slice(-2)); rest = rest.slice(0, -2); }
+  if (rest) parts.unshift(rest);
+  return (v < 0 ? '-' : '') + parts.join(',') + ',' + last3;
+};
+
+// AlertBanner is reserved for things that are actively costing money right
+// now. Deliberately loud and deliberately rare — if everything is an alert,
+// nothing is.
+function AlertBanner({ title, body, onPress }: { title: string; body: string; onPress?: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!onPress}
+      className="bg-red-50 border border-red-200 rounded-3xl p-5 mb-3 active:opacity-90"
+    >
+      <View className="flex-row items-start gap-3">
+        <AlertTriangle size={20} color="#B91C1C" />
+        <View className="flex-1">
+          <Text className="text-red-900 font-black text-base">{title}</Text>
+          <Text className="text-red-700 text-sm font-medium mt-1 leading-5">{body}</Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+// PaymentAnomaliesCard — every row here means money moved in a way we
+// couldn't fully reconcile, and none of it was visible anywhere before.
+function PaymentAnomaliesCard({
+  anomalies,
+  onPressCustomer,
+}: {
+  anomalies: PaymentAnomaly[];
+  onPressCustomer: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const LABEL: Record<string, { text: string; detail: string; tone: string }> = {
+    ALREADY_PAID: {
+      text: 'Paid twice',
+      detail: 'Refund owed',
+      tone: 'text-red-700',
+    },
+    AMOUNT_MISMATCH: {
+      text: 'Wrong amount',
+      detail: 'Paid a different amount than billed',
+      tone: 'text-amber-700',
+    },
+    UNMATCHED: {
+      text: 'No matching bill',
+      detail: "Money arrived we can't tie to anyone",
+      tone: 'text-red-700',
+    },
+  };
+
+  const refundsOwed = anomalies.filter((a) => a.outcome === 'ALREADY_PAID').length;
+
+  return (
+    <View className="bg-white rounded-3xl border border-red-200 mb-3 overflow-hidden">
+      <Pressable onPress={() => setOpen((o) => !o)} className="p-5 active:bg-slate-50">
+        <View className="flex-row items-center gap-3">
+          <View className="w-10 h-10 rounded-2xl bg-red-50 items-center justify-center">
+            <Wallet size={19} color="#B91C1C" />
+          </View>
+          <View className="flex-1">
+            <Text className="font-black text-slate-900 text-base">
+              {anomalies.length} payment {anomalies.length === 1 ? 'issue' : 'issues'}
+            </Text>
+            <Text className="text-slate-500 text-xs font-semibold mt-0.5">
+              {refundsOwed > 0
+                ? `${refundsOwed} customer${refundsOwed === 1 ? '' : 's'} owed a refund`
+                : 'Needs reconciling'}
+            </Text>
+          </View>
+          {open ? <ChevronUp size={18} color="#94A3B8" /> : <ChevronDown size={18} color="#94A3B8" />}
+        </View>
+      </Pressable>
+
+      {open && (
+        <View className="border-t border-slate-100">
+          {anomalies.slice(0, 12).map((a) => {
+            const l = LABEL[a.outcome] || { text: a.outcome, detail: '', tone: 'text-slate-700' };
+            return (
+              <Pressable
+                key={a.eventId}
+                onPress={() => a.customerId && onPressCustomer(a.customerId)}
+                disabled={!a.customerId}
+                className="px-5 py-3.5 border-b border-slate-100 active:bg-slate-50"
+              >
+                <View className="flex-row items-center justify-between">
+                  <Text className={`font-bold text-sm ${l.tone}`}>{l.text}</Text>
+                  {a.amount != null && (
+                    <Text className="font-black text-slate-900 text-sm">₹{rupees(a.amount)}</Text>
+                  )}
+                </View>
+                <Text className="text-slate-600 text-xs font-semibold mt-0.5">
+                  {a.customerName || 'Unknown customer'} · {a.receivedAt}
+                </Text>
+                {!!a.note && (
+                  <Text className="text-slate-400 text-[11px] mt-1 leading-4" numberOfLines={2}>
+                    {a.note}
+                  </Text>
+                )}
+              </Pressable>
+            );
+          })}
+          {anomalies.length > 12 && (
+            <Text className="text-slate-400 text-xs font-semibold px-5 py-3">
+              +{anomalies.length - 12} more
+            </Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// SuspendedCard — customers cut off for non-payment. The amount is the
+// actionable number: it's what switches them back on.
+function SuspendedCard({
+  suspended,
+  onPressCustomer,
+}: {
+  suspended: SuspendedCustomer[];
+  onPressCustomer: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const total = suspended.reduce((a, s) => a + s.amount, 0);
+
+  return (
+    <View className="bg-white rounded-3xl border border-amber-200 mb-3 overflow-hidden">
+      <Pressable onPress={() => setOpen((o) => !o)} className="p-5 active:bg-slate-50">
+        <View className="flex-row items-center gap-3">
+          <View className="w-10 h-10 rounded-2xl bg-amber-50 items-center justify-center">
+            <Ban size={19} color="#B45309" />
+          </View>
+          <View className="flex-1">
+            <Text className="font-black text-slate-900 text-base">
+              {suspended.length} suspended
+            </Text>
+            <Text className="text-slate-500 text-xs font-semibold mt-0.5">
+              ₹{rupees(total)} outstanding — deliveries stopped
+            </Text>
+          </View>
+          {open ? <ChevronUp size={18} color="#94A3B8" /> : <ChevronDown size={18} color="#94A3B8" />}
+        </View>
+      </Pressable>
+
+      {open && (
+        <View className="border-t border-slate-100">
+          {suspended.map((s) => (
+            <Pressable
+              key={s.customerId}
+              onPress={() => onPressCustomer(s.customerId)}
+              className="px-5 py-3.5 border-b border-slate-100 flex-row items-center justify-between active:bg-slate-50"
+            >
+              <View className="flex-1 pr-3">
+                <Text className="font-bold text-slate-800 text-sm">{s.customerName}</Text>
+                <Text className="text-slate-400 text-xs font-semibold mt-0.5">
+                  {s.billingMonth}{s.suspendedOn ? ` · since ${s.suspendedOn}` : ''}
+                </Text>
+              </View>
+              <Text className="font-black text-slate-900 text-sm">₹{rupees(s.amount)}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// StuckChangesCard should never render. A row here means the sweeper failed
+// to apply an approved change: the customer was told their new order starts
+// tomorrow, it didn't, and the request also vanished from the review queue
+// because that filters on PENDING.
+function StuckChangesCard({
+  changes,
+  onPressCustomer,
+}: {
+  changes: StuckChange[];
+  onPressCustomer: (id: string) => void;
+}) {
+  return (
+    <View className="bg-white rounded-3xl border border-red-200 mb-3 overflow-hidden">
+      <View className="p-5 flex-row items-center gap-3">
+        <View className="w-10 h-10 rounded-2xl bg-red-50 items-center justify-center">
+          <GitPullRequest size={19} color="#B91C1C" />
+        </View>
+        <View className="flex-1">
+          <Text className="font-black text-slate-900 text-base">
+            {changes.length} order {changes.length === 1 ? 'change' : 'changes'} never applied
+          </Text>
+          <Text className="text-slate-500 text-xs font-semibold mt-0.5 leading-4">
+            Approved, the date passed, and the customer's order never changed
+          </Text>
+        </View>
+      </View>
+      <View className="border-t border-slate-100">
+        {changes.map((c) => (
+          <Pressable
+            key={c.changeId}
+            onPress={() => onPressCustomer(c.customerId)}
+            className="px-5 py-3.5 border-b border-slate-100 flex-row items-center justify-between active:bg-slate-50"
+          >
+            <Text className="font-bold text-slate-800 text-sm flex-1 pr-3">{c.customerName}</Text>
+            <Text className="text-red-700 font-bold text-xs">
+              {c.daysLate} {c.daysLate === 1 ? 'day' : 'days'} late
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// BillingHealthCard reports whether the automated cycle actually ran.
+//
+// A dashboard that shows revenue but not whether anyone was billed for it is
+// telling half the story — and a missed run on the 1st produces no bill, no
+// reminder, no suspension, and no error.
+function BillingHealthCard({ runs, overdueCount, overdueAmount }: {
+  runs: DunningStatus[];
+  overdueCount: number;
+  overdueAmount: number;
+}) {
+  const byPhase = (p: string) => runs.find((r) => r.phase === p);
+  const gen = byPhase('GENERATE');
+
+  return (
+    <View className="bg-white rounded-3xl border border-slate-200 p-5 mb-3">
+      <View className="flex-row items-center gap-3 mb-3">
+        <View className="w-10 h-10 rounded-2xl bg-slate-100 items-center justify-center">
+          <Receipt size={19} color="#0F172A" />
+        </View>
+        <View className="flex-1">
+          <Text className="font-black text-slate-900 text-base">Billing</Text>
+          <Text className="text-slate-500 text-xs font-semibold mt-0.5">
+            {overdueCount > 0
+              ? `₹${rupees(overdueAmount)} unpaid across ${overdueCount} ${overdueCount === 1 ? 'bill' : 'bills'}`
+              : 'Nothing outstanding'}
+          </Text>
+        </View>
+      </View>
+
+      <View className="bg-slate-50 rounded-2xl p-3.5">
+        {gen ? (
+          <Text className="text-slate-600 text-xs font-semibold">
+            Last invoice run: {gen.lastRunOn} — {gen.affected} {gen.affected === 1 ? 'bill' : 'bills'} for {gen.billingMonth}
+          </Text>
+        ) : (
+          <Text className="text-slate-500 text-xs font-semibold">
+            No invoice run recorded yet.
+          </Text>
+        )}
+        {runs
+          .filter((r) => r.phase !== 'GENERATE' && r.affected > 0)
+          .map((r) => (
+            <Text key={r.phase} className="text-slate-500 text-xs font-medium mt-1.5">
+              {r.phase === 'REMIND' ? 'Reminders' : 'Suspensions'}: {r.affected} on {r.lastRunOn}
+            </Text>
+          ))}
+      </View>
+    </View>
+  );
+}
+
+
 export default function AdminDashboard() {
   const router = useRouter();
 
@@ -591,9 +926,16 @@ export default function AdminDashboard() {
                 className="w-12 h-12 bg-white rounded-full justify-center items-center border border-slate-200 active:bg-slate-50"
               >
                 <Bell color="#0F172A" size={22} strokeWidth={2} />
-                {(flaggedIssues.length > 0 || changeCount > 0 || unrouted.length > 0 || (stats?.pendingApprovals ?? 0) > 0) && (
-                  <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
-                )}
+                {(flaggedIssues.length > 0 ||
+                  changeCount > 0 ||
+                  unrouted.length > 0 ||
+                  (stats?.pendingApprovals ?? 0) > 0 ||
+                  (stats?.attention?.paymentAnomalies.length ?? 0) > 0 ||
+                  (stats?.attention?.stuckChanges.length ?? 0) > 0 ||
+                  (stats?.attention?.suspended.length ?? 0) > 0 ||
+                  stats?.attention?.billingRunMissed) && (
+                    <View className="absolute top-3 right-3.5 w-2.5 h-2.5 rounded-full bg-red-500 border-2 border-white" />
+                  )}
               </Pressable>
               <Pressable
                 onPress={() => go('/admin/settings')}
@@ -610,6 +952,46 @@ export default function AdminDashboard() {
             </View>
           ) : (
             <>
+              {/* ATTENTION — things that are quietly wrong.
+                  Deliberately above today's run. The operational numbers tell
+                  you whether the vans went out, which someone checks anyway.
+                  These tell you about failures nobody would otherwise notice:
+                  a customer owed a refund, an order change that never applied,
+                  a month where no bills went out at all. Putting them below
+                  the fold would be the same as not having them. */}
+              {stats?.attention && (
+                <View className="px-5">
+                  {stats.attention.billingRunMissed && (
+                    <AlertBanner
+                      title="No bills have gone out this month"
+                      body="The invoice run hasn't recorded a result since the 1st. Nobody has been billed, so nobody will pay. Check the server is running and open Billing to generate manually."
+                      onPress={() => go('/admin/billing')}
+                    />
+                  )}
+
+                  {stats.attention.stuckChanges.length > 0 && (
+                    <StuckChangesCard
+                      changes={stats.attention.stuckChanges}
+                      onPressCustomer={(id) => go(`/admin/customers/${id}`)}
+                    />
+                  )}
+
+                  {stats.attention.paymentAnomalies.length > 0 && (
+                    <PaymentAnomaliesCard
+                      anomalies={stats.attention.paymentAnomalies}
+                      onPressCustomer={(id) => go(`/admin/customers/${id}`)}
+                    />
+                  )}
+
+                  {stats.attention.suspended.length > 0 && (
+                    <SuspendedCard
+                      suspended={stats.attention.suspended}
+                      onPressCustomer={(id) => go(`/admin/customers/${id}`)}
+                    />
+                  )}
+                </View>
+              )}
+
               {/* Live progress */}
               <View className="px-5">
                 {stats ? (
@@ -640,6 +1022,29 @@ export default function AdminDashboard() {
                   subtitle="Customer profile & order edits awaiting review"
                   badge={changeCount > 0 ? changeCount : null}
                   onPress={() => go('/admin/change-requests')}
+                />
+              </View>
+
+              {stats?.attention && (
+                <View className="px-5">
+                  <BillingHealthCard
+                    runs={stats.attention.lastDunningRuns}
+                    overdueCount={stats.attention.overdueCount}
+                    overdueAmount={stats.attention.overdueAmount}
+                  />
+                </View>
+              )}
+
+              {/* Manifest sits above delivery logs: logs are what happened,
+                  the manifest is what is happening now. During a round that's
+                  the more urgent question. */}
+              <View className="px-5 mb-2">
+                <EntryCard
+                  icon={Truck}
+                  title="Manifest"
+                  subtitle="What each driver is delivering today"
+                  badge={null}
+                  onPress={() => go('/admin/manifest')}
                 />
               </View>
 

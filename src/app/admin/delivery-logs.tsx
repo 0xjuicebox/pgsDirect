@@ -462,7 +462,7 @@ export default function DeliveryLogsScreen() {
   const load = useCallback(async () => {
     // allSettled — one endpoint failing shouldn't blank the other.
     const [logsRes, failRes] = await Promise.allSettled([
-      api.get(`/delivery?date=${date}&limit=200`),
+      api.get(`/delivery?date=${date}&limit=1000`),
       api.get('/driver/sync-failures'),
     ]);
     if (logsRes.status === 'fulfilled') setLogs(logsRes.value || []);

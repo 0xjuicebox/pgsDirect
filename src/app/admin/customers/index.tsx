@@ -58,11 +58,6 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'all', label: 'All' },
 ];
 
-// normalisePhone strips everything but digits so a search for "9876543210"
-// matches a stored "+91 98765 43210". Admins read numbers off a bill or a
-// missed call, not out of the database.
-const normalisePhone = (s: string) => s.replace(/\D/g, '');
-
 export default function CustomersScreen() {
   const router = useRouter();
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -72,12 +67,20 @@ export default function CustomersScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchData = useCallback(async () => {
+  // Search runs on the server.
+  //
+  // Filtering a single fetched page in the browser is fine at 100 customers
+  // and quietly broken above it: customer #400 was never in the payload, so
+  // searching for them returned nothing — indistinguishable from "no such
+  // customer". Now the query goes to the database, which has all the rows.
+  const fetchData = useCallback(async (searchTerm: string, status: FilterKey) => {
     try {
-      // NOTE: still capped at 100. Beyond that this list silently truncates
-      // and search will appear to "lose" customers. Needs real pagination
-      // before the customer count grows past a pilot route.
-      const custData = await api.get('/customer?page=1&limit=100');
+      const params = new URLSearchParams({ page: '1', limit: '200' });
+      if (searchTerm.trim()) params.set('q', searchTerm.trim());
+      // 'inactive' is a UI grouping over two statuses, so it stays client-side.
+      if (status !== 'all' && status !== 'inactive') params.set('status', status);
+
+      const custData = await api.get(`/customer?${params.toString()}`);
       setCustomers(custData || []);
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to load customers');
@@ -87,9 +90,12 @@ export default function CustomersScreen() {
     }
   }, []);
 
+  // Debounced: a request per keystroke would hammer the endpoint and, worse,
+  // let a slow earlier response overwrite a newer one.
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    const t = setTimeout(() => fetchData(query, filterStatus), query ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [query, filterStatus, fetchData]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {
@@ -105,24 +111,16 @@ export default function CustomersScreen() {
   }, [customers]);
 
   const visible = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const qDigits = normalisePhone(query);
-
+    // Name/phone/address matching already happened server-side. What's left
+    // here is the 'inactive' grouping, which spans two statuses and has no
+    // server equivalent.
     let list = customers.filter((c) => {
       // Status filter
       if (filterStatus === 'pending' && c.status !== 'pending') return false;
       if (filterStatus === 'active' && c.status !== 'active') return false;
       if (filterStatus === 'suspended' && c.status !== 'suspended') return false;
       if (filterStatus === 'inactive' && !['disabled', 'rejected'].includes(c.status)) return false;
-
-      if (!q) return true;
-
-      // Search across name, phone and address. Phone is matched on digits
-      // only so formatting differences don't cause a miss.
-      const nameHit = (c.customer || '').toLowerCase().includes(q);
-      const addrHit = (c.houseAddress || '').toLowerCase().includes(q);
-      const phoneHit = qDigits.length >= 3 && normalisePhone(c.phoneNumber || '').includes(qDigits);
-      return nameHit || addrHit || phoneHit;
+      return true;
     });
 
     list = [...list].sort((a, b) => {
@@ -139,7 +137,7 @@ export default function CustomersScreen() {
     });
 
     return list;
-  }, [customers, filterStatus, query, sortBy]);
+  }, [customers, filterStatus, sortBy]);
 
   const renderHeader = () => (
     <View className="px-5 pt-4 pb-3">
@@ -206,7 +204,7 @@ export default function CustomersScreen() {
 
       <View className="flex-row items-center justify-between mt-3">
         <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-          {visible.length} shown
+          {visible.length} shown{visible.length >= 200 ? ' — refine to see more' : ''}
         </Text>
         <Pressable
           onPress={() => setSortBy((s) => (s === 'name' ? 'status' : 'name'))}
@@ -242,7 +240,7 @@ export default function CustomersScreen() {
                 refreshing={refreshing}
                 onRefresh={() => {
                   setRefreshing(true);
-                  fetchData();
+                  fetchData(query, filterStatus);
                 }}
                 tintColor="#16A34A"
               />
