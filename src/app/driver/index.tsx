@@ -60,6 +60,14 @@ type Stop = {
   status: 'PENDING' | 'DELIVERED' | 'SKIPPED' | 'UNATTEMPTED' | 'SYSTEM_AUTO_CLOSED';
   expectedOrder: OrderData;
   actualOrder?: OrderData;
+  // planEdited: an admin corrected this stop's order after the round was
+  // locked at its cutoff.
+  //
+  // Without surfacing this, a driver who loaded the van at 05:00 and refreshed
+  // at 06:30 would see a quantity silently differ from what they packed, with
+  // nothing to say whether the app was wrong or they had misread it. Naming
+  // the change turns a suspicious inconsistency into an instruction.
+  planEdited?: boolean;
 };
 
 type ShiftRow = {
@@ -310,6 +318,16 @@ const StopCard = ({ stop, index, onDeliver, onSkip, onCall, onNavigate }: any) =
           <Text className="text-green-600 font-bold text-[10px] uppercase tracking-wider mb-0.5">Stop {index + 1}</Text>
           <Text className={`text-xl font-black text-slate-800 tracking-tight ${isDone ? 'line-through text-slate-400' : ''}`}>{stop.customer}</Text>
           <Text className="text-slate-400 text-sm font-medium mt-0.5">{stop.address}</Text>
+          {/* An admin changed this order after the round was locked.
+              Shown only while the stop is still pending — once delivered the
+              driver has already acted on it, and the badge would just be
+              noise on a completed card. */}
+          {stop.planEdited && !isDone && (
+            <View className="flex-row items-center gap-1.5 bg-amber-50 border border-amber-200 self-start px-2.5 py-1 rounded-lg mt-2">
+              <AlertCircle size={12} color="#B45309" />
+              <Text className="text-amber-800 text-[11px] font-bold">Order changed by office</Text>
+            </View>
+          )}
         </View>
         {!isDone ? (
           <View className="flex-row gap-2">
@@ -834,6 +852,7 @@ function manifestToBucket(res: PromiseSettledResult<any>): SlotBucket {
       status: backendStop.status || 'PENDING',
       expectedOrder: expected,
       actualOrder: backendStop.status === 'DELIVERED' ? actual : undefined,
+      planEdited: !!backendStop.planEdited,
     };
   });
   return { stops, routeId: data.routeId || '' };

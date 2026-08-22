@@ -39,7 +39,10 @@ import { api } from '../../utils/api';
 // -------------------------------------------------------------------------
 
 type Slot = 'morning' | 'evening';
-type LogStatus = 'DELIVERED' | 'SKIPPED' | 'UNATTEMPTED' | 'FAILED' | 'SYSTEM_AUTO_CLOSED';
+// PENDING appears once a manifest is locked at its cutoff: the stop is on the
+// driver's list with its plan frozen, and nothing has happened to it yet. It
+// becomes UNATTEMPTED when the round closes without the stop being reached.
+type LogStatus = 'PENDING' | 'DELIVERED' | 'SKIPPED' | 'UNATTEMPTED' | 'FAILED' | 'SYSTEM_AUTO_CLOSED';
 
 // Mirrors delivery.AdminDeliveryLog
 type DeliveryLog = {
@@ -121,6 +124,7 @@ function shiftDate(iso: string, days: number): string {
 const STATUS_META: Record<LogStatus, { label: string; cls: string; text: string }> = {
   DELIVERED: { label: 'Delivered', cls: 'bg-green-50 border-green-200', text: 'text-green-700' },
   SKIPPED: { label: 'Skipped', cls: 'bg-red-50 border-red-200', text: 'text-red-700' },
+  PENDING: { label: 'On the van', cls: 'bg-blue-50 border-blue-200', text: 'text-blue-700' },
   UNATTEMPTED: { label: 'Unattempted', cls: 'bg-slate-100 border-slate-200', text: 'text-slate-600' },
   FAILED: { label: 'Failed', cls: 'bg-red-50 border-red-200', text: 'text-red-700' },
   SYSTEM_AUTO_CLOSED: { label: 'Auto-closed', cls: 'bg-amber-50 border-amber-200', text: 'text-amber-800' },
@@ -597,7 +601,7 @@ export default function DeliveryLogsScreen() {
             </View>
 
             <View className="flex-row flex-wrap gap-2 mb-4">
-              {(['all', 'DELIVERED', 'SKIPPED', 'UNATTEMPTED'] as const).map((s) => (
+              {(['all', 'PENDING', 'DELIVERED', 'SKIPPED', 'UNATTEMPTED'] as const).map((s) => (
                 <Pressable
                   key={s}
                   onPress={() => setStatusFilter(s)}

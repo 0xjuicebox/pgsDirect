@@ -8,6 +8,8 @@ import {
   RefreshControl,
   Platform,
   Linking,
+  Modal,
+  Alert,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -23,11 +25,37 @@ import {
   AlertTriangle,
   Truck,
   PackageX,
+  Lock,
+  LockOpen,
+  X,
+  Minus,
+  Plus,
 } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 
 import { api } from '../../utils/api';
+
+// Products in bill order, so the edit sheet and an invoice read the same way.
+const PRODUCTS: { key: string; label: string; step: number; litre: boolean }[] = [
+  { key: 'milkQuantity', label: 'Milk', step: 500, litre: true },
+  { key: 'curdQuantity', label: 'Curd', step: 250, litre: true },
+  { key: 'butterQuantity', label: 'Butter', step: 100, litre: false },
+  { key: 'gheeQuantity', label: 'Ghee', step: 100, litre: false },
+  { key: 'lassiQuantity', label: 'Buttermilk', step: 250, litre: true },
+  { key: 'paneerQuantity', label: 'Paneer', step: 100, litre: false },
+  { key: 'jaggeryQuantity', label: 'Jaggery', step: 250, litre: false },
+  { key: 'khandQuantity', label: 'Desi Khand', step: 250, litre: false },
+  { key: 'oilQuantity', label: 'Mustard Oil', step: 500, litre: true },
+  { key: 'attaQuantity', label: 'Atta', step: 500, litre: false },
+  { key: 'burfiQuantity', label: 'Burfi', step: 100, litre: false },
+];
+
+// The API takes bare product keys (milk, curd) while the manifest returns
+// them suffixed (milkQuantity). Converting at this one boundary rather than
+// changing either side — the mismatch is a known trap in this codebase and
+// the edges are where it's already handled.
+const bareKey = (k: string) => k.replace(/Quantity$/, '');
 
 // The manifest answers the question the roster can't: what is the driver
 // actually delivering, right now, on this route?
@@ -56,6 +84,8 @@ type Stop = {
   deliveryOrder: Order;   // what the driver was asked to deliver
   status: string | null;  // null = not yet attempted
   actualOrder: Order;     // what was actually recorded
+  locked: boolean;        // plan frozen at the slot cutoff — authoritative
+  planEdited: boolean;    // an admin changed the plan after it was locked
 };
 
 type Manifest = {
@@ -125,6 +155,159 @@ const STATUS: Record<string, { label: string; bg: string; text: string }> = {
   FAILED: { label: 'Failed', bg: 'bg-red-100', text: 'text-red-800' },
 };
 
+
+// EditPlanSheet lets an admin correct a locked stop before the van leaves.
+//
+// Locking the manifest at the cutoff is what stops a driver's list changing
+// under them mid-round. But a cutoff exists to stop CUSTOMERS reordering, not
+// to stop the business fixing its own mistake — an order entered wrong, or a
+// customer who rang after the deadline. Without this the van goes out with a
+// load someone already knows is wrong.
+//
+// Saving stamps plan_edited_at, which the driver's app surfaces: a list that
+// changes mid-round then reads as a deliberate correction rather than the app
+// misbehaving.
+function EditPlanSheet({
+  stop,
+  routeId,
+  date,
+  slot,
+  onClose,
+  onSaved,
+}: {
+  stop: Stop | null;
+  routeId: string;
+  date: string;
+  slot: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [items, setItems] = useState<Record<string, number>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (stop) setItems({ ...(stop.deliveryOrder || {}) });
+  }, [stop]);
+
+  if (!stop) return null;
+
+  const bump = (key: string, delta: number) => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setItems((prev) => {
+      const next = Math.max(0, (prev[key] || 0) + delta);
+      return { ...prev, [key]: next };
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload: Record<string, number> = {};
+      Object.entries(items).forEach(([k, v]) => {
+        if (v > 0) payload[bareKey(k)] = v;
+      });
+
+      await api.put(`/route/${routeId}/manifest/plan`, {
+        customerId: stop.id,
+        date,
+        slot,
+        items: payload,
+      });
+
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      Alert.alert('Could not save', e.message || 'Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const total = Object.values(items).reduce((a, b) => a + (b || 0), 0);
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onClose}>
+      <View className="flex-1 bg-black/40 justify-end">
+        <View className="bg-white rounded-t-[32px] max-h-[85%]">
+          <View className="px-6 pt-5 pb-3 border-b border-slate-100 flex-row items-center justify-between">
+            <View className="flex-1 pr-3">
+              <Text className="text-lg font-black text-slate-900 tracking-tight">
+                {stop.customer}
+              </Text>
+              <Text className="text-slate-400 text-xs font-semibold mt-0.5">
+                Stop {stop.stopOrder} · correcting today's plan
+              </Text>
+            </View>
+            <Pressable
+              onPress={onClose}
+              className="w-9 h-9 rounded-full bg-slate-100 items-center justify-center active:bg-slate-200"
+            >
+              <X size={17} color="#0F172A" />
+            </Pressable>
+          </View>
+
+          <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 8 }}>
+            <View className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 mb-4">
+              <Text className="text-amber-800 text-xs font-bold leading-4">
+                This round is locked. Changing it here updates the driver's list only for today — the customer's regular order is untouched.
+              </Text>
+            </View>
+
+            {PRODUCTS.map((p) => {
+              const v = items[p.key] || 0;
+              return (
+                <View
+                  key={p.key}
+                  className={`flex-row items-center justify-between py-2.5 ${v > 0 ? '' : 'opacity-50'}`}
+                >
+                  <Text className="font-bold text-slate-800 text-sm flex-1">{p.label}</Text>
+                  <View className="flex-row items-center gap-3">
+                    <Pressable
+                      onPress={() => bump(p.key, -p.step)}
+                      className="w-9 h-9 rounded-xl bg-slate-100 items-center justify-center active:bg-slate-200"
+                    >
+                      <Minus size={15} color="#0F172A" />
+                    </Pressable>
+                    <Text className="font-black text-slate-900 text-sm w-20 text-center">
+                      {v > 0 ? fmtQty(v, p.key) : '—'}
+                    </Text>
+                    <Pressable
+                      onPress={() => bump(p.key, p.step)}
+                      className="w-9 h-9 rounded-xl bg-slate-900 items-center justify-center active:opacity-90"
+                    >
+                      <Plus size={15} color="white" />
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          <View className="px-5 pb-8 pt-3 border-t border-slate-100">
+            {total === 0 && (
+              <Text className="text-slate-500 text-xs font-semibold text-center mb-2.5">
+                Everything at zero — this stop will be skipped today.
+              </Text>
+            )}
+            <Pressable
+              onPress={save}
+              disabled={saving}
+              className="bg-slate-900 h-14 rounded-2xl items-center justify-center active:opacity-90"
+            >
+              {saving ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-white font-bold text-base">Update the driver's list</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function ManifestScreen() {
   const router = useRouter();
 
@@ -137,6 +320,7 @@ export default function ManifestScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Stop | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -176,6 +360,12 @@ export default function ManifestScreen() {
   }, [routeId, date, slot, load]);
 
   const stops = manifest?.stops || [];
+
+  // A round is locked when its stops are. Derived rather than returned
+  // separately: an empty round has no stops and therefore no lock state to
+  // show, which is the honest answer — there's nothing to freeze.
+  const isLocked = stops.length > 0 && stops.every((s) => s.locked);
+  const anyEdited = stops.some((s) => s.planEdited);
 
   const summary = useMemo(() => {
     const done = stops.filter((s) => s.status === 'DELIVERED').length;
@@ -360,6 +550,19 @@ export default function ManifestScreen() {
                     )}
                   </View>
 
+                  {/* Lock state. Before the cutoff the list is still moving —
+                      a customer can change today's order right up to it — and
+                      an admin looking at a pre-cutoff manifest should know
+                      they're seeing a projection, not the final load. */}
+                  <View className="flex-row items-center gap-2 mt-3">
+                    {isLocked ? <Lock size={13} color="#059669" /> : <LockOpen size={13} color="#94A3B8" />}
+                    <Text className={`text-xs font-bold ${isLocked ? 'text-green-700' : 'text-slate-400'}`}>
+                      {isLocked
+                        ? `Locked${anyEdited ? ' · edited since' : ''}`
+                        : 'Not locked yet — this list can still change'}
+                    </Text>
+                  </View>
+
                   {summary.short > 0 && (
                     <View className="flex-row items-center gap-2 bg-amber-50 border border-amber-200 rounded-2xl px-3.5 py-2.5 mt-3">
                       <AlertTriangle size={14} color="#B45309" />
@@ -388,7 +591,14 @@ export default function ManifestScreen() {
                     return (
                       <Pressable
                         key={`${s.id}-${s.stopOrder}`}
-                        onPress={() => router.push(`/admin/customers/${s.id}` as any)}
+                        onPress={() => {
+                          // A locked, not-yet-delivered stop is the only
+                          // thing that can still be corrected — so that's
+                          // what tapping does. Once delivered, the useful
+                          // action is looking at the customer instead.
+                          if (s.locked && !s.status && routeId) setEditing(s);
+                          else router.push(`/admin/customers/${s.id}` as any);
+                        }}
                         className="bg-white rounded-3xl border border-slate-200 p-4 active:opacity-95"
                       >
                         <View className="flex-row items-start gap-3">
@@ -432,6 +642,12 @@ export default function ManifestScreen() {
                               </View>
                             )}
 
+                            {s.planEdited && (
+                              <Text className="text-amber-700 text-[11px] font-bold mt-1.5">
+                                Plan edited after lock
+                              </Text>
+                            )}
+
                             {!s.isActive && (
                               <Text className="text-red-600 text-[11px] font-bold mt-1.5">
                                 Customer is not active
@@ -447,6 +663,15 @@ export default function ManifestScreen() {
             </>
           )}
         </ScrollView>
+
+        <EditPlanSheet
+          stop={editing}
+          routeId={routeId || ''}
+          date={date}
+          slot={slot}
+          onClose={() => setEditing(null)}
+          onSaved={load}
+        />
       </SafeAreaView>
     </View>
   );
