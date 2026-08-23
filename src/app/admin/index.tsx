@@ -566,7 +566,13 @@ const ResolveSheet = ({ issue, onClose, onDone }: any) => {
 // Attention section
 // ---------------------------------------------------------------------------
 
-const rupees = (v: number) => {
+// exactRupees renders a precise amount with Indian digit grouping and no
+// symbol — 1,23,456 rather than ₹1.2L.
+//
+// Distinct from the rupees() helper above, which abbreviates for headline
+// metrics. Abbreviation is wrong here: "₹1.2L owed" is fine as a summary but
+// useless on a refund the admin has to actually pay back.
+const exactRupees = (v: number) => {
   const n = Math.round(Math.abs(v));
   const str = String(n);
   if (str.length <= 3) return (v < 0 ? '-' : '') + str;
@@ -665,7 +671,7 @@ function PaymentAnomaliesCard({
                 <View className="flex-row items-center justify-between">
                   <Text className={`font-bold text-sm ${l.tone}`}>{l.text}</Text>
                   {a.amount != null && (
-                    <Text className="font-black text-slate-900 text-sm">₹{rupees(a.amount)}</Text>
+                    <Text className="font-black text-slate-900 text-sm">₹{exactRupees(a.amount)}</Text>
                   )}
                 </View>
                 <Text className="text-slate-600 text-xs font-semibold mt-0.5">
@@ -714,7 +720,7 @@ function SuspendedCard({
               {suspended.length} suspended
             </Text>
             <Text className="text-slate-500 text-xs font-semibold mt-0.5">
-              ₹{rupees(total)} outstanding — deliveries stopped
+              ₹{exactRupees(total)} outstanding — deliveries stopped
             </Text>
           </View>
           {open ? <ChevronUp size={18} color="#94A3B8" /> : <ChevronDown size={18} color="#94A3B8" />}
@@ -735,7 +741,7 @@ function SuspendedCard({
                   {s.billingMonth}{s.suspendedOn ? ` · since ${s.suspendedOn}` : ''}
                 </Text>
               </View>
-              <Text className="font-black text-slate-900 text-sm">₹{rupees(s.amount)}</Text>
+              <Text className="font-black text-slate-900 text-sm">₹{exactRupees(s.amount)}</Text>
             </Pressable>
           ))}
         </View>
@@ -811,7 +817,7 @@ function BillingHealthCard({ runs, overdueCount, overdueAmount }: {
           <Text className="font-black text-slate-900 text-base">Billing</Text>
           <Text className="text-slate-500 text-xs font-semibold mt-0.5">
             {overdueCount > 0
-              ? `₹${rupees(overdueAmount)} unpaid across ${overdueCount} ${overdueCount === 1 ? 'bill' : 'bills'}`
+              ? `₹${exactRupees(overdueAmount)} unpaid across ${overdueCount} ${overdueCount === 1 ? 'bill' : 'bills'}`
               : 'Nothing outstanding'}
           </Text>
         </View>

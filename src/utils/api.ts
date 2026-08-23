@@ -9,7 +9,7 @@ const BACKEND_URL =
   process.env.EXPO_PUBLIC_BACKEND_URL ||
   (Platform.OS === "web"
     ? "http://localhost:3000"
-    : "http://192.168.29.84:3000");
+    : "https://pgsbackend-e4hiw.ondigitalocean.app");
 
 // ApiError extends Error so `throw` still works everywhere, but carries the
 // HTTP status code so callers (like the offline queue) can tell a
