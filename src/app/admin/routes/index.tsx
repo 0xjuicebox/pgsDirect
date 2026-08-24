@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 
 import { api } from '../../../utils/api';
+import { useKeyboardHeight } from '../../../utils/useKeyboardHeight';
 
 // The backend returns prices and slotDrivers inline on each route (List
 // batch-loads slot drivers in one query), so the list needs no extra calls.
@@ -61,6 +62,7 @@ function SlotDriverPill({ slot, drivers }: { slot: 'morning' | 'evening'; driver
 }
 
 export default function RoutesScreen() {
+  const keyboardHeight = useKeyboardHeight();
   const router = useRouter();
   const [routes, setRoutes] = useState<RouteItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -206,7 +208,10 @@ export default function RoutesScreen() {
 
         {/* Create route modal */}
         <Modal visible={showCreate} transparent animationType="slide" onRequestClose={() => setShowCreate(false)}>
-          <View className="flex-1 justify-end bg-slate-900/40">
+          <View
+            className="flex-1 justify-end bg-slate-900/40"
+            style={{ paddingBottom: keyboardHeight }}
+          >
             <Pressable className="absolute inset-0" onPress={() => setShowCreate(false)} />
             <View className="bg-white rounded-t-[32px] p-6 pb-10">
               <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-6" />

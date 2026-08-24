@@ -89,6 +89,16 @@ export default function AdminTabLayout() {
           tabBarIcon: (props) => <AnimatedTabIcon {...props} IconComponent={Receipt} label="Billing" />,
         }}
       />
+
+      {/* Screens reachable by navigation, not by tab.
+          expo-router turns every file in this directory into a tab unless
+          told otherwise, which is why four unlabelled icons were appearing
+          in the dock. href: null keeps the route working while removing it
+          from the bar. */}
+      <Tabs.Screen name="change-requests" options={{ href: null }} />
+      <Tabs.Screen name="delivery-logs" options={{ href: null }} />
+      <Tabs.Screen name="manifest" options={{ href: null }} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
     </Tabs>
   );
 }

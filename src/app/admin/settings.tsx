@@ -296,7 +296,14 @@ export default function AdminSettingsScreen() {
           </View>
         </View>
 
-        <ScrollView contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false} className="px-5">
+        <ScrollView
+          // The save bar floats above the tab dock at ~88px and is itself
+          // ~95px tall, so while it's visible the last section would sit
+          // behind it. Padding tracks whether the bar is showing rather than
+          // reserving dead space when it isn't.
+          contentContainerStyle={{ paddingBottom: dirty ? 220 : 120 }}
+          showsVerticalScrollIndicator={false}
+          className="px-5">
           {/* Section: customer order cutoffs
               When a customer can no longer change TODAY's order for a slot.
               Enforced in override.Submit; future dates are always editable. */}
@@ -381,9 +388,18 @@ export default function AdminSettingsScreen() {
           </View>
         </ScrollView>
 
-        {/* Save bar — only appears when dirty */}
+        {/* Save bar — only appears when dirty.
+            Offset above the floating tab dock rather than sitting at bottom-0:
+            the dock is 68px tall with a 16px inset, so a bar flush to the
+            bottom was covered by it and the Save button couldn't be tapped. */}
         {dirty && (
-          <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-5 py-4" style={Platform.OS === 'android' ? { elevation: 12 } : { shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } }}>
+          <View className="absolute left-0 right-0 bg-white border-t border-slate-200 px-5 py-4"
+            style={[
+              { bottom: Platform.OS === 'ios' ? 100 : 88 },
+              Platform.OS === 'android'
+                ? { elevation: 12 }
+                : { shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -4 } },
+            ]}>
             <SafeAreaView edges={['bottom']}>
               <Pressable
                 onPress={save}

@@ -23,6 +23,7 @@ import {
 import { Linking as RNLinking } from 'react-native';
 
 import { api } from '../../../utils/api';
+import { useKeyboardHeight } from '../../../utils/useKeyboardHeight';
 
 // -------------------------------------------------------------------------
 // Types — mirror the rewritten backend exactly
@@ -133,6 +134,14 @@ const REJECTION_REASONS = [
 // Small shared bits
 // -------------------------------------------------------------------------
 
+// ProductStepper displays base units the way a person reads them.
+//
+// Values are stored in ml and grams. The stepper used to print the raw number
+// against a fixed 'L' or 'kg' label, so 1000 ml rendered as "1000 L" — an
+// admin setting a customer's milk saw a thousand litres a day.
+//
+// Same class of bug as "Milk: 2000" in the WhatsApp messages: the conversion
+// exists in several display paths and was missing from this one.
 const ProductStepper = ({ value, onChange, min, max, step, unit }: any) => (
   <View className="flex-row items-center gap-2">
     <Pressable
@@ -141,9 +150,17 @@ const ProductStepper = ({ value, onChange, min, max, step, unit }: any) => (
     >
       <Minus size={16} color="#334155" />
     </Pressable>
-    <View className="items-center w-14">
-      <Text className="text-base font-black text-slate-800">{value}</Text>
-      <Text className="text-[10px] text-slate-400 font-semibold">{unit}</Text>
+    <View className="items-center w-16">
+      <Text className="text-base font-black text-slate-800">
+        {value >= 1000
+          ? parseFloat((value / 1000).toFixed(2))
+          : value}
+      </Text>
+      <Text className="text-[10px] text-slate-400 font-semibold">
+        {/* Sub-1000 values are still in the base unit, so the label has to
+            change with the number rather than being fixed per product. */}
+        {value >= 1000 ? unit : unit === 'L' ? 'ml' : 'g'}
+      </Text>
     </View>
     <Pressable
       onPress={() => onChange(Math.min(max, value + step))}
@@ -531,10 +548,14 @@ function SlotPanel({
 // -------------------------------------------------------------------------
 
 function RejectModal({ visible, onClose, onConfirm, loading }: any) {
+  const keyboardHeight = useKeyboardHeight();
   const [reason, setReason] = useState(REJECTION_REASONS[0]);
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View className="flex-1 justify-end bg-slate-900/40">
+      <View
+        className="flex-1 justify-end bg-slate-900/40"
+        style={{ paddingBottom: keyboardHeight }}
+      >
         <Pressable className="absolute inset-0" onPress={onClose} />
         <View className="bg-white rounded-t-[32px] p-6 pb-10">
           <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-6" />
@@ -1214,7 +1235,7 @@ export default function CustomerDetailScreen() {
           </View>
         </View>
 
-        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
           {/* Status banner */}
           <View className="flex-row items-center justify-between mb-5">
             <View className={`px-3 py-1.5 rounded-xl border ${statusStyle}`}>

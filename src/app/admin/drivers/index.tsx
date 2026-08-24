@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 
 import { api } from '../../../utils/api';
+import { useKeyboardHeight } from '../../../utils/useKeyboardHeight';
 
 type Driver = {
   id: string;
@@ -27,6 +28,7 @@ type Driver = {
 };
 
 export default function DriversScreen() {
+  const keyboardHeight = useKeyboardHeight();
   const router = useRouter();
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [filter, setFilter] = useState<'active' | 'all'>('active');
@@ -182,7 +184,10 @@ export default function DriversScreen() {
         )}
 
         <Modal visible={showCreate} transparent animationType="slide" onRequestClose={() => setShowCreate(false)}>
-          <View className="flex-1 justify-end bg-slate-900/40">
+          <View
+            className="flex-1 justify-end bg-slate-900/40"
+            style={{ paddingBottom: keyboardHeight }}
+          >
             <Pressable className="absolute inset-0" onPress={() => setShowCreate(false)} />
             <View className="bg-white rounded-t-[32px] p-6 pb-10">
               <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-6" />

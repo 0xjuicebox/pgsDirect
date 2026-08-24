@@ -21,6 +21,7 @@ import {
 } from 'lucide-react-native';
 
 import { api } from '../../../utils/api';
+import { useKeyboardHeight } from '../../../utils/useKeyboardHeight';
 
 // -------------------------------------------------------------------------
 // Types
@@ -84,9 +85,13 @@ function DriverPickerModal({
   onSelect: (id: string | null) => void;
   onClose: () => void;
 }) {
+  const keyboardHeight = useKeyboardHeight();
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View className="flex-1 bg-slate-900/40 justify-end">
+      <View
+        className="flex-1 bg-slate-900/40 justify-end"
+        style={{ paddingBottom: keyboardHeight }}
+      >
         <Pressable className="absolute inset-0" onPress={onClose} />
         <View className="bg-white rounded-t-[32px] max-h-[70%] pb-8">
           <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
@@ -141,6 +146,7 @@ function DriverPickerModal({
 // -------------------------------------------------------------------------
 
 export default function RouteDetailScreen() {
+  const keyboardHeight = useKeyboardHeight();
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
 
@@ -389,7 +395,7 @@ export default function RouteDetailScreen() {
           </View>
         </View>
 
-        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
           {!!route.description && (
             <Text className="text-slate-500 font-medium mb-5">{route.description}</Text>
           )}
@@ -590,7 +596,10 @@ export default function RouteDetailScreen() {
 
         {/* Edit route meta modal */}
         <Modal visible={showEditMeta} transparent animationType="slide" onRequestClose={() => setShowEditMeta(false)}>
-          <View className="flex-1 justify-end bg-slate-900/40">
+          <View
+            className="flex-1 justify-end bg-slate-900/40"
+            style={{ paddingBottom: keyboardHeight }}
+          >
             <Pressable className="absolute inset-0" onPress={() => setShowEditMeta(false)} />
             <View className="bg-white rounded-t-[32px] p-6 pb-10">
               <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-6" />

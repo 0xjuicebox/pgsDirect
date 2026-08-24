@@ -30,6 +30,7 @@ import {
 import * as Haptics from 'expo-haptics';
 
 import { api } from '../../utils/api';
+import { useKeyboardHeight } from '../../utils/useKeyboardHeight';
 
 // -------------------------------------------------------------------------
 // Types — mirror update.PendingChange
@@ -213,6 +214,7 @@ const SlotDiff = ({ slot, before, after }: { slot: Slot; before: SlotSubscriptio
 // -------------------------------------------------------------------------
 
 const ApproveSheet = ({ change, routes, onClose, onDone }: any) => {
+  const keyboardHeight = useKeyboardHeight();
   const [assigning, setAssigning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [picks, setPicks] = useState<Record<Slot, { routeId: string; stopOrder: string }>>({
@@ -256,7 +258,10 @@ const ApproveSheet = ({ change, routes, onClose, onDone }: any) => {
 
   return (
     <Modal visible={!!change} transparent animationType="slide" onRequestClose={onClose}>
-      <View className="flex-1 justify-end bg-slate-900/40">
+      <View
+        className="flex-1 justify-end bg-slate-900/40"
+        style={{ paddingBottom: keyboardHeight }}
+      >
         <Pressable className="absolute inset-0" onPress={onClose} />
         <View className="bg-white rounded-t-[32px] px-6 pt-6 pb-8 max-h-[85%]" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
           <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-5" />
@@ -356,6 +361,7 @@ const PRESET_REASONS = [
 ];
 
 const RejectSheet = ({ change, onClose, onDone }: any) => {
+  const keyboardHeight = useKeyboardHeight();
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -380,7 +386,10 @@ const RejectSheet = ({ change, onClose, onDone }: any) => {
 
   return (
     <Modal visible={!!change} transparent animationType="slide" onRequestClose={onClose}>
-      <View className="flex-1 justify-end bg-slate-900/40">
+      <View
+        className="flex-1 justify-end bg-slate-900/40"
+        style={{ paddingBottom: keyboardHeight }}
+      >
         <Pressable className="absolute inset-0" onPress={onClose} />
         <View className="bg-white rounded-t-[32px] px-6 pt-6 pb-8 max-h-[85%]" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
           <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-5" />

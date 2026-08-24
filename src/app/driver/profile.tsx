@@ -117,7 +117,10 @@ export default function DriverProfileScreen() {
     joinDate: '',
   });
 
-  const [routeInfo, setRouteInfo] = useState<{ name: string; depot: string; shift: string } | null>(null);
+  // Standing assignments, both slots. Was previously derived from the day's
+  // manifest, which infers the slot from the clock — so a morning driver
+  // checking their profile after lunch was told they had no route.
+  const [routes, setRoutes] = useState<{ routeId: string; routeName: string; slot: string; stopCount: number }[]>([]);
 
   useEffect(() => {
     fetchProfileData();
@@ -142,22 +145,10 @@ export default function DriverProfileScreen() {
       });
 
       try {
-        const targetDate = new Date().toISOString().split('T')[0];
-        const manifest = await api.get(`/driver/manifest?date=${targetDate}`);
-
-        if (manifest && manifest.routeName) {
-          setRouteInfo({
-            name: manifest.routeName,
-            depot: 'Main Hub',
-            shift: 'Morning Shift',
-          });
-        }
-      } catch (manifestError: any) {
-        if (manifestError.message?.includes('404') || manifestError.message?.includes('No active route')) {
-          setRouteInfo(null);
-        } else {
-          console.error("Error fetching manifest for profile:", manifestError);
-        }
+        setRoutes((await api.get('/driver/routes')) || []);
+      } catch (routeError: any) {
+        console.error("Error fetching route assignments:", routeError);
+        setRoutes([]);
       }
 
     } catch (error) {
@@ -185,7 +176,13 @@ export default function DriverProfileScreen() {
   return (
     <View className="flex-1 bg-slate-50">
       <SafeAreaView className="flex-1">
-        <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+        <ScrollView
+          className="flex-1"
+          // Clears the floating tab dock. Without this the last card — the
+          // sign-out button — sat behind it and couldn't be tapped.
+          contentContainerStyle={{ paddingBottom: 120 }}
+          showsVerticalScrollIndicator={false}
+        >
 
           {/* Header Area */}
           <View className="px-5 pt-6 pb-2 items-center">
@@ -204,38 +201,51 @@ export default function DriverProfileScreen() {
           <View className="px-5 mt-8">
             <Text className="text-slate-800 text-sm font-bold tracking-tight mb-2 px-1">Current Assignment</Text>
 
-            {routeInfo ? (
-              <View className="bg-white rounded-3xl p-5 border border-slate-200" style={Platform.OS === 'android' ? { elevation: 2 } : { shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8 }}>
-                <View className="flex-row items-start mb-4">
-                  <View className="bg-green-50 w-12 h-12 rounded-2xl items-center justify-center mr-4">
-                    <MapPin size={24} color="#16A34A" />
-                  </View>
-                  <View className="flex-1 pt-1">
-                    <Text className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Assigned Route</Text>
-                    <Text className="text-slate-800 font-black text-lg tracking-tight leading-6">
-                      {routeInfo.name}
-                    </Text>
-                  </View>
-                </View>
+            {routes.length > 0 ? (
+              <View className="gap-2.5">
+                {routes.map((r) => (
+                  <View
+                    key={`${r.routeId}-${r.slot}`}
+                    className="bg-white rounded-3xl p-5 border border-slate-200"
+                    style={Platform.OS === 'android' ? { elevation: 2 } : { shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8 }}
+                  >
+                    <View className="flex-row items-start gap-4 mb-4">
+                      <View className="w-11 h-11 rounded-2xl bg-emerald-50 items-center justify-center">
+                        <Truck size={20} color="#059669" />
+                      </View>
+                      <View className="flex-1 pt-1">
+                        <Text className="text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">
+                          {r.slot === 'morning' ? 'Morning Route' : 'Evening Route'}
+                        </Text>
+                        <Text className="text-slate-800 font-black text-lg tracking-tight leading-6">
+                          {r.routeName}
+                        </Text>
+                      </View>
+                    </View>
 
-                <View className="h-[1px] bg-slate-100 w-full mb-4" />
+                    <View className="h-[1px] bg-slate-100 w-full mb-4" />
 
-                <View className="flex-row justify-between">
-                  <View className="flex-row items-center gap-2">
-                    <Truck size={16} color="#94A3B8" />
-                    <Text className="text-slate-600 font-semibold text-sm">{routeInfo.depot}</Text>
+                    <View className="flex-row justify-between">
+                      <View className="flex-row items-center gap-2">
+                        <Clock size={16} color="#94A3B8" />
+                        <Text className="text-slate-600 font-semibold text-sm">
+                          {r.slot === 'morning' ? 'Morning shift' : 'Evening shift'}
+                        </Text>
+                      </View>
+                      <Text className="text-slate-600 font-semibold text-sm">
+                        {r.stopCount} {r.stopCount === 1 ? 'stop' : 'stops'}
+                      </Text>
+                    </View>
                   </View>
-                  <View className="flex-row items-center gap-2">
-                    <Clock size={16} color="#94A3B8" />
-                    <Text className="text-slate-600 font-semibold text-sm">{routeInfo.shift}</Text>
-                  </View>
-                </View>
+                ))}
               </View>
             ) : (
               <View className="bg-slate-100 rounded-3xl p-6 border border-slate-200 border-dashed items-center justify-center">
-                <AlertCircle size={32} color="#94A3B8" className="mb-3" />
-                <Text className="text-slate-700 font-bold text-base mb-1">No Active Route</Text>
-                <Text className="text-slate-400 text-sm text-center">You are not assigned to a delivery route today. Contact your depot manager.</Text>
+                <AlertCircle size={32} color="#94A3B8" />
+                <Text className="text-slate-700 font-bold text-base mb-1 mt-3">No route assigned</Text>
+                <Text className="text-slate-400 text-sm text-center">
+                  You haven't been assigned to a delivery route yet. Ask the office to add you to one.
+                </Text>
               </View>
             )}
           </View>

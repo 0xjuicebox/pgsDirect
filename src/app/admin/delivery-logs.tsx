@@ -33,6 +33,7 @@ import {
 import * as Haptics from 'expo-haptics';
 
 import { api } from '../../utils/api';
+import { useKeyboardHeight } from '../../utils/useKeyboardHeight';
 
 // -------------------------------------------------------------------------
 // Types
@@ -156,6 +157,7 @@ type EditContext = {
 };
 
 const EditModal = ({ ctx, onClose, onSaved }: { ctx: EditContext | null; onClose: () => void; onSaved: () => void }) => {
+  const keyboardHeight = useKeyboardHeight();
   const [status, setStatus] = useState<LogStatus>('DELIVERED');
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [feedback, setFeedback] = useState('');
@@ -237,7 +239,10 @@ const EditModal = ({ ctx, onClose, onSaved }: { ctx: EditContext | null; onClose
 
   return (
     <Modal visible={!!ctx} transparent animationType="slide" onRequestClose={onClose}>
-      <View className="flex-1 justify-end bg-slate-900/40">
+      <View
+        className="flex-1 justify-end bg-slate-900/40"
+        style={{ paddingBottom: keyboardHeight }}
+      >
         <Pressable className="absolute inset-0" onPress={onClose} />
         <View className="bg-white rounded-t-[32px] px-6 pt-6 pb-8 max-h-[85%]" style={Platform.OS === 'android' ? { elevation: 24 } : {}}>
           <View className="w-10 h-1 bg-slate-200 rounded-full self-center mb-5" />

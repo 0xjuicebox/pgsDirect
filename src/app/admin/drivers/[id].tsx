@@ -191,7 +191,7 @@ export default function DriverDetailScreen() {
           </View>
         </View>
 
-        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1 px-5 pt-5" contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
           {/* Active toggle */}
           <Pressable
             onPress={handleToggleActive}
