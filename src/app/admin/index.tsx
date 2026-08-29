@@ -866,7 +866,14 @@ export default function AdminDashboard() {
     // allSettled, not all — one endpoint failing shouldn't blank the whole screen.
     const [statsRes, issuesRes, changesRes] = await Promise.allSettled([
       api.get('/stats'),
-      api.get('/delivery/flagged?limit=10'),
+      // Every open complaint, not the first ten.
+      //
+      // The dashboard is the only place these surface, so a cap meant the
+      // eleventh complaint was invisible with nothing to say it existed —
+      // and unlike a truncated list a customer waiting on a reply doesn't
+      // go away. Complaints are rare and each one needs a human, so the
+      // right number is all of them.
+      api.get('/delivery/flagged?limit=200'),
       api.get('/update/changes'),
     ]);
 

@@ -1063,7 +1063,12 @@ export default function CustomerDetailScreen() {
     try {
       const [custData, routeData] = await Promise.all([
         api.get(`/customer/${id}`),
-        api.get('/route'),
+        // Explicit limit rather than relying on the middleware default.
+        // This screen was the only caller that omitted it, and when the
+        // default was 10 the route picker silently dropped every route beyond
+        // the tenth — oldest first, since the list orders by created_at DESC.
+        // That reads as "some routes are missing", not "this list is cut off".
+        api.get('/route?page=1&limit=200'),
       ]);
       setCustomer(custData);
       setRoutes((routeData || []).map((r: any) => ({ id: r.id, name: r.name })));
