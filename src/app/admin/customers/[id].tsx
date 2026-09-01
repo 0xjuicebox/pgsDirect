@@ -23,6 +23,7 @@ import {
 import { Linking as RNLinking } from 'react-native';
 
 import { api } from '../../../utils/api';
+import { todayLocal } from '../../../utils/date';
 import { useKeyboardHeight } from '../../../utils/useKeyboardHeight';
 
 // -------------------------------------------------------------------------
@@ -261,7 +262,7 @@ function SlotPanel({
         slot,
         scheduleType,
         activeDays: scheduleType === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : activeDays,
-        anchorDate: new Date().toISOString().split('T')[0],
+        anchorDate: todayLocal(),
         defaultOrder: order,
       });
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -301,7 +302,7 @@ function SlotPanel({
         slot,
         scheduleType: 'daily',
         activeDays: [0, 1, 2, 3, 4, 5, 6],
-        anchorDate: new Date().toISOString().split('T')[0],
+        anchorDate: todayLocal(),
         defaultOrder: EMPTY_ORDER,
       });
       onChanged();

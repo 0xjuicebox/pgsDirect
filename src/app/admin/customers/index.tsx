@@ -19,6 +19,8 @@ import {
   X,
   AlertTriangle,
   ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -50,6 +52,9 @@ const STATUS_STYLE: Record<string, { chip: string; text: string; label: string }
 
 // Filters are ordered by how often an admin needs them: pending is the
 // worklist, suspended is money owed, the rest are lookup.
+// One screenful of scrolling, and comfortably inside the server's cap.
+const PAGE_SIZE = 200;
+
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'pending', label: 'Pending' },
   { key: 'active', label: 'Active' },
@@ -66,6 +71,8 @@ export default function CustomersScreen() {
   const [sortBy, setSortBy] = useState<SortKey>('name');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
 
   // Search runs on the server.
   //
@@ -73,15 +80,29 @@ export default function CustomersScreen() {
   // and quietly broken above it: customer #400 was never in the payload, so
   // searching for them returned nothing — indistinguishable from "no such
   // customer". Now the query goes to the database, which has all the rows.
-  const fetchData = useCallback(async (searchTerm: string, status: FilterKey) => {
+  const fetchData = useCallback(async (searchTerm: string, status: FilterKey, pageNum: number) => {
     try {
-      const params = new URLSearchParams({ page: '1', limit: '200' });
+      // Ask for one more than we show.
+      //
+      // The endpoint returns a bare array with no total, so there is no way to
+      // know whether a further page exists — and a Next button that might do
+      // nothing is worse than none. Requesting PAGE_SIZE + 1 answers it: if
+      // the extra row comes back, there is more.
+      //
+      // The alternative was a count query or a total in the response, both of
+      // which change a contract used by other screens for a control only this
+      // one needs.
+      const params = new URLSearchParams({
+        page: String(pageNum),
+        limit: String(PAGE_SIZE + 1),
+      });
       if (searchTerm.trim()) params.set('q', searchTerm.trim());
       // 'inactive' is a UI grouping over two statuses, so it stays client-side.
       if (status !== 'all' && status !== 'inactive') params.set('status', status);
 
-      const custData = await api.get(`/customer?${params.toString()}`);
-      setCustomers(custData || []);
+      const custData: Customer[] = (await api.get(`/customer?${params.toString()}`)) || [];
+      setHasMore(custData.length > PAGE_SIZE);
+      setCustomers(custData.slice(0, PAGE_SIZE));
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to load customers');
     } finally {
@@ -93,9 +114,14 @@ export default function CustomersScreen() {
   // Debounced: a request per keystroke would hammer the endpoint and, worse,
   // let a slow earlier response overwrite a newer one.
   useEffect(() => {
-    const t = setTimeout(() => fetchData(query, filterStatus), query ? 300 : 0);
+    const t = setTimeout(() => fetchData(query, filterStatus, page), query ? 300 : 0);
     return () => clearTimeout(t);
-  }, [query, filterStatus, fetchData]);
+  }, [query, filterStatus, page, fetchData]);
+
+  // Any change to what is being searched or filtered invalidates the page
+  // number. Staying on page 3 of a new result set shows an arbitrary slice —
+  // or nothing at all, which reads as "no matches".
+  useEffect(() => { setPage(1); }, [query, filterStatus]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {
@@ -178,7 +204,10 @@ export default function CustomersScreen() {
         renderItem={({ item }) => {
           const active = filterStatus === item.key;
           const n = counts[item.key] ?? 0;
-          const urgent = (item.key === 'pending' || item.key === 'suspended') && n > 0;
+          // Same caveat as the count below: a dot driven by one page would go
+          // dark while pending customers sat on page 2.
+          const urgent = !hasMore && page === 1
+            && (item.key === 'pending' || item.key === 'suspended') && n > 0;
           return (
             <Pressable
               onPress={() => {
@@ -193,18 +222,59 @@ export default function CustomersScreen() {
                 <Text className={`text-sm font-bold ${active ? 'text-white' : 'text-slate-600'}`}>
                   {item.label}
                 </Text>
-                <Text className={`text-sm font-bold ${active ? 'text-slate-400' : 'text-slate-400'}`}>
-                  {n}
-                </Text>
+                {/* Counts come from the fetched page, so they only describe
+                    everything when there is only one page. Showing "12" on
+                    page 2 would be a number an admin trusts and shouldn't —
+                    it counts this slice, not the business. */}
+                {!hasMore && page === 1 && (
+                  <Text className="text-sm font-bold text-slate-400">{n}</Text>
+                )}
               </View>
             </Pressable>
           );
         }}
       />
 
+      {/* Pagination. Hidden entirely when there is one page, so the common
+          case at pilot scale carries no chrome it doesn't need. */}
+      {(page > 1 || hasMore) && (
+        <View className="flex-row items-center justify-between mt-3 bg-white border border-slate-200 rounded-2xl p-1.5">
+          <Pressable
+            onPress={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className={`flex-row items-center gap-1 px-3.5 py-2 rounded-xl ${page === 1 ? '' : 'bg-slate-100 active:bg-slate-200'
+              }`}
+          >
+            <ChevronLeft size={15} color={page === 1 ? '#CBD5E1' : '#0F172A'} />
+            <Text className={`text-sm font-bold ${page === 1 ? 'text-slate-300' : 'text-slate-800'}`}>
+              Prev
+            </Text>
+          </Pressable>
+
+          <Text className="text-sm font-black text-slate-700">Page {page}</Text>
+
+          <Pressable
+            onPress={() => hasMore && setPage((p) => p + 1)}
+            disabled={!hasMore}
+            className={`flex-row items-center gap-1 px-3.5 py-2 rounded-xl ${hasMore ? 'bg-slate-100 active:bg-slate-200' : ''
+              }`}
+          >
+            <Text className={`text-sm font-bold ${hasMore ? 'text-slate-800' : 'text-slate-300'}`}>
+              Next
+            </Text>
+            <ChevronRight size={15} color={hasMore ? '#0F172A' : '#CBD5E1'} />
+          </Pressable>
+        </View>
+      )}
+
       <View className="flex-row items-center justify-between mt-3">
         <Text className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-          {visible.length} shown{visible.length >= 200 ? ' — refine to see more' : ''}
+          {/* The range, not a count. "200 shown" on page 3 is true and
+              useless; "401–600" tells you where you are. No total, because
+              the endpoint doesn't return one — see fetchData. */}
+          {customers.length === 0
+            ? 'None'
+            : `${(page - 1) * PAGE_SIZE + 1}–${(page - 1) * PAGE_SIZE + visible.length}`}
         </Text>
         <Pressable
           onPress={() => setSortBy((s) => (s === 'name' ? 'status' : 'name'))}
@@ -240,7 +310,7 @@ export default function CustomersScreen() {
                 refreshing={refreshing}
                 onRefresh={() => {
                   setRefreshing(true);
-                  fetchData(query, filterStatus);
+                  fetchData(query, filterStatus, page);
                 }}
                 tintColor="#16A34A"
               />

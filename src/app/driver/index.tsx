@@ -36,6 +36,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { api } from '../../utils/api';
+import { todayLocal } from '../../utils/date';
 import { supabase } from '../../utils/supabase';
 import {
   submitDelivery,
@@ -81,12 +82,61 @@ type ShiftState = {
   date: string;
   morning: ShiftRow | null;
   evening: ShiftRow | null;
-  cutoffs: { morningShiftEnd: string; eveningShiftEnd: string };
+  cutoffs: { morningStart: string; eveningStart: string; morningShiftEnd: string; eveningShiftEnd: string };
 };
 
-const UNIT_MAP: Record<string, string> = {
-  curd: 'kg', paneer: 'kg', butter: 'pkt', lassi: 'pkt', burfi: 'kg',
-  ghee: 'L', bread: 'pkt', eggs: 'dz', cheese: 'pkt', yogurt: 'cup',
+// Product labels and units, matching the admin app, the WhatsApp messages and
+// the invoice.
+//
+// This replaces a UNIT_MAP left over from the Expo template: it listed bread,
+// eggs, cheese and yogurt — products PGS doesn't sell — and had no entry for
+// milk, oil, atta, khand or jaggery. So milk rendered as a bare "1000" with no
+// unit at all, and buttermilk as "500pkt", while the admin manifest for the
+// same stop said "Milk 1 L" and "Buttermilk 500 ml".
+//
+// A driver comparing their screen to the office's had no reason to trust
+// either. That is worse than a cosmetic bug: the manifest is the instruction,
+// and an instruction you don't believe is one you start second-guessing.
+const PRODUCT_LABELS: Record<string, string> = {
+  milk: 'Milk', curd: 'Curd', butter: 'Butter', ghee: 'Ghee',
+  lassi: 'Buttermilk', paneer: 'Paneer', jaggery: 'Jaggery',
+  khand: 'Desi Khand', oil: 'Mustard Oil', atta: 'Atta', burfi: 'Burfi',
+};
+
+// Liquids read in ml/L, everything else in g/kg. Quantities are stored in base
+// units throughout the system; every display path converts.
+const LITRE_PRODUCTS = new Set(['milk', 'curd', 'lassi', 'oil']);
+
+// bareKey strips the "Quantity" suffix the API uses on some payloads. The
+// {milk: 2000} vs {milkQuantity: 2000} split is a known trap in this codebase;
+// converting at the display boundary avoids adding a third convention.
+const bareKey = (k: string) => k.replace(/Quantity$/, '').toLowerCase();
+
+const productLabel = (key: string) => PRODUCT_LABELS[bareKey(key)] || key;
+
+// Step sizes for the delivery adjustment stepper, in base units.
+//
+// The stepper used to move by ±1 — one millilitre. Correcting 2 L of milk to
+// 1 L would have taken a thousand taps, so in practice a driver would give up
+// and record whatever was already there. That bills the customer for milk they
+// didn't get, from a screen that looked like it was working.
+//
+// Matches the steps used on the customer forms and the admin app, including
+// the sack and tin minimums.
+const STEP: Record<string, number> = {
+  milk: 500, curd: 250, lassi: 500, oil: 1000,
+  butter: 100, ghee: 100, paneer: 100, burfi: 100,
+  jaggery: 1000, khand: 1000, atta: 5000,
+};
+const stepFor = (key: string) => STEP[bareKey(key)] ?? 100;
+
+// formatQty renders a base-unit quantity the way a person reads it:
+// 500 -> "500 ml", 1000 -> "1 L", 2500 -> "2.5 L".
+const formatQty = (v: number, key: string) => {
+  const litre = LITRE_PRODUCTS.has(bareKey(key));
+  if (v < 1000) return `${v} ${litre ? 'ml' : 'g'}`;
+  const n = parseFloat((v / 1000).toFixed(2));
+  return `${n} ${litre ? 'L' : 'kg'}`;
 };
 
 const getIconForItem = (name: string) => {
@@ -109,7 +159,96 @@ const getIconForItem = (name: string) => {
 // tied to whichever slot is selected.
 // ==========================================
 
-const SlotPicker = ({ current, onChange, morningActive, eveningActive }: any) => (
+
+// ==========================================
+// SHIFT WINDOWS
+//
+// A round may be started once its manifest has locked, and not after its
+// shift end time.
+//
+//   morning   02:00 -> 11:30
+//   evening   13:00 -> 22:00
+//
+// Both boundaries come from system_config, so an admin changing a cutoff
+// changes this too. There is no separate setting to drift out of step.
+//
+// WHY NOT BEFORE THE CUTOFF
+//
+// The manifest locks at the customer order cutoff. Before it, a customer can
+// still change today's order — so a driver who loads the van at 01:30 is
+// working from a list that may not match what the office expects by 02:15.
+// After it, the list is frozen.
+//
+// WHY NOT AFTER THE SHIFT END
+//
+// The auto-end sweeper closes any ACTIVE shift past that time, within five
+// minutes. Starting one then produces a shift that ends itself and a round
+// closed as unattempted — which reads as the app malfunctioning rather than
+// as a rule.
+// ==========================================
+
+/** Minutes since midnight for "HH:MM" or "HH:MM:SS". -1 when unparseable. */
+function timeToMinutes(t?: string): number {
+  if (!t) return -1;
+  const [h, m] = t.split(':');
+  const hh = parseInt(h, 10);
+  const mm = parseInt(m, 10);
+  if (Number.isNaN(hh) || Number.isNaN(mm)) return -1;
+  return hh * 60 + mm;
+}
+
+/** "02:00:00" -> "2:00 AM" */
+function prettyTime(t?: string): string {
+  const mins = timeToMinutes(t);
+  if (mins < 0) return '';
+  const h24 = Math.floor(mins / 60);
+  const m = mins % 60;
+  const period = h24 >= 12 ? 'PM' : 'AM';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
+type SlotWindow = { open: boolean; reason: string; opensAt: string; closesAt: string };
+
+/**
+ * Whether a slot can be started right now.
+ *
+ * Fails OPEN when the config couldn't be read — an empty cutoffs object
+ * leaves the button enabled rather than locking a driver out of their round
+ * because a config query failed. A driver who cannot start is stranded; a
+ * driver who starts early is merely early.
+ */
+function slotWindow(slot: 'morning' | 'evening', cutoffs?: ShiftState['cutoffs']): SlotWindow {
+  const start = slot === 'morning' ? cutoffs?.morningStart : cutoffs?.eveningStart;
+  const end = slot === 'morning' ? cutoffs?.morningShiftEnd : cutoffs?.eveningShiftEnd;
+
+  const startMin = timeToMinutes(start);
+  const endMin = timeToMinutes(end);
+  const opensAt = prettyTime(start);
+  const closesAt = prettyTime(end);
+
+  if (startMin < 0 || endMin < 0) {
+    return { open: true, reason: '', opensAt, closesAt };
+  }
+
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+
+  if (nowMin < startMin) {
+    return {
+      open: false,
+      reason: `Opens at ${opensAt}, once today's list is final`,
+      opensAt,
+      closesAt,
+    };
+  }
+  if (nowMin >= endMin) {
+    return { open: false, reason: `${slot === 'morning' ? 'Morning' : 'Evening'} round closed at ${closesAt}`, opensAt, closesAt };
+  }
+  return { open: true, reason: '', opensAt, closesAt };
+}
+
+const SlotPicker = ({ current, onChange, morningActive, eveningActive, morningWindow, eveningWindow }: any) => (
   <View className="flex-row bg-slate-100 rounded-2xl p-1 mb-4">
     <Pressable
       onPress={() => onChange('morning')}
@@ -117,9 +256,18 @@ const SlotPicker = ({ current, onChange, morningActive, eveningActive }: any) =>
       style={current === 'morning' && Platform.OS === 'android' ? { elevation: 2 } : {}}
     >
       <Sun size={16} color={current === 'morning' ? '#F59E0B' : '#94A3B8'} />
-      <Text className={`text-sm font-black tracking-tight ${current === 'morning' ? 'text-slate-800' : 'text-slate-400'}`}>
-        Morning
-      </Text>
+      <View className="items-center">
+        <Text className={`text-sm font-black tracking-tight ${current === 'morning' ? 'text-slate-800' : 'text-slate-400'}`}>
+          Morning
+        </Text>
+        {/* The window, so a driver can see when a round opens without tapping
+            into it. Shown only while shut — once it's open the label is noise. */}
+        {morningWindow && !morningWindow.open && !!morningWindow.opensAt && (
+          <Text className="text-[9px] font-bold text-slate-400 mt-0.5">
+            from {morningWindow.opensAt}
+          </Text>
+        )}
+      </View>
       {morningActive && <View className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
     </Pressable>
     <Pressable
@@ -128,9 +276,16 @@ const SlotPicker = ({ current, onChange, morningActive, eveningActive }: any) =>
       style={current === 'evening' && Platform.OS === 'android' ? { elevation: 2 } : {}}
     >
       <Moon size={16} color={current === 'evening' ? '#6366F1' : '#94A3B8'} />
-      <Text className={`text-sm font-black tracking-tight ${current === 'evening' ? 'text-slate-800' : 'text-slate-400'}`}>
-        Evening
-      </Text>
+      <View className="items-center">
+        <Text className={`text-sm font-black tracking-tight ${current === 'evening' ? 'text-slate-800' : 'text-slate-400'}`}>
+          Evening
+        </Text>
+        {eveningWindow && !eveningWindow.open && !!eveningWindow.opensAt && (
+          <Text className="text-[9px] font-bold text-slate-400 mt-0.5">
+            from {eveningWindow.opensAt}
+          </Text>
+        )}
+      </View>
       {eveningActive && <View className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
     </Pressable>
   </View>
@@ -149,21 +304,37 @@ const SlotPicker = ({ current, onChange, morningActive, eveningActive }: any) =>
 // work; the label is informational only.
 // ==========================================
 
-const ShiftControl = ({ shift, slot, busy, onStart, onEnd }: any) => {
+const ShiftControl = ({ shift, slot, busy, onStart, onEnd, window }: any) => {
   if (!shift) {
+    const open = window?.open !== false;
     return (
-      <Pressable
-        onPress={onStart}
-        disabled={busy}
-        className="bg-green-500 h-14 rounded-2xl items-center justify-center flex-row gap-2 mb-4 active:opacity-90"
-        style={Platform.OS === 'android' ? { elevation: 3 } : { shadowColor: '#22C55E', shadowOpacity: 0.25, shadowRadius: 6 }}
-      >
-        {busy ? <ActivityIndicator color="white" /> : (
-          <>
-            <Text className="text-white text-base font-black tracking-wide">Start {slot === 'morning' ? 'Morning' : 'Evening'} Shift</Text>
-          </>
+      <>
+        <Pressable
+          onPress={open ? onStart : undefined}
+          disabled={busy || !open}
+          className={`h-14 rounded-2xl items-center justify-center flex-row gap-2 ${open ? 'bg-green-500 active:opacity-90 mb-4' : 'bg-slate-200 mb-2'}`}
+          style={open && Platform.OS === 'android' ? { elevation: 3 } : {}}
+        >
+          {busy ? <ActivityIndicator color="white" /> : (
+            <>
+              {!open && <Clock size={16} color="#94A3B8" />}
+              <Text className={`text-base font-black tracking-wide ${open ? 'text-white' : 'text-slate-400'}`}>
+                Start {slot === 'morning' ? 'Morning' : 'Evening'} Shift
+              </Text>
+            </>
+          )}
+        </Pressable>
+
+        {/* The reason, not just a dead button. A disabled control with no
+            explanation reads as broken; one that says when it opens reads as
+            a schedule. */}
+        {!open && !!window?.reason && (
+          <View className="bg-slate-100 border border-slate-200 rounded-2xl px-4 py-3 mb-4 flex-row items-center gap-2">
+            <Clock size={14} color="#64748B" />
+            <Text className="text-slate-600 text-xs font-bold flex-1">{window.reason}</Text>
+          </View>
         )}
-      </Pressable>
+      </>
     );
   }
 
@@ -297,11 +468,10 @@ const ProgressBar = ({ completed, total }: { completed: number; total: number })
 };
 
 const ItemPill = ({ name, qty }: { name: string; qty: number }) => {
-  const unit = UNIT_MAP[name.toLowerCase()] || '';
   return (
     <View className="flex-row items-center bg-slate-50 px-2.5 py-1.5 rounded-lg mr-2 mb-2 border border-slate-100">
-      <Text className="text-slate-900 font-black mr-1 text-xs">{qty}{unit}</Text>
-      <Text className="text-slate-500 font-semibold capitalize text-xs">{name}</Text>
+      <Text className="text-slate-900 font-black mr-1 text-xs">{formatQty(qty, name)}</Text>
+      <Text className="text-slate-500 font-semibold text-xs">{productLabel(name)}</Text>
     </View>
   );
 };
@@ -315,6 +485,14 @@ const StopCard = ({ stop, index, onDeliver, onSkip, onCall, onNavigate }: any) =
     <View className={`bg-white rounded-[24px] p-5 mb-4 border border-slate-100 ${isDone ? 'opacity-60 bg-slate-50/50' : ''}`} style={Platform.OS === 'android' && !isDone ? { elevation: 2 } : { shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 8 }}>
       <View className="flex-row justify-between items-start mb-3">
         <View className="flex-1 pr-2">
+          {/* Position in the list, not the route's stop_order.
+              The backend orders the manifest by stop_order, so this is the
+              sequence the driver should actually walk. Showing the raw
+              stop_order instead would surface a real problem — an unsequenced
+              route has every stop at 1 — but it would surface it as a
+              confusing screen rather than an actionable one. The place to see
+              and fix that is the admin Routes screen, which shows the true
+              values. */}
           <Text className="text-green-600 font-bold text-[10px] uppercase tracking-wider mb-0.5">Stop {index + 1}</Text>
           <Text className={`text-xl font-black text-slate-800 tracking-tight ${isDone ? 'line-through text-slate-400' : ''}`}>{stop.customer}</Text>
           <Text className="text-slate-400 text-sm font-medium mt-0.5">{stop.address}</Text>
@@ -391,21 +569,21 @@ const DeliveryModal = ({ visible, stop, editedOrder, onClose, onAdjust, onConfir
           <ScrollView className="max-h-[300px] mb-6" showsVerticalScrollIndicator={false}>
             <View className="bg-slate-50 rounded-3xl p-4 border border-slate-100 space-y-3">
               {Object.keys(stop.expectedOrder).map((itemKey) => {
-                const unit = UNIT_MAP[itemKey.toLowerCase()] || '';
                 const Icon = getIconForItem(itemKey);
                 return (
                   <View key={itemKey} className="flex-row justify-between items-center py-2.5 border-b border-slate-100 last:border-0">
                     <View className="flex-row items-center gap-3">
                       <Icon size={20} color="#94A3B8" />
-                      <Text className="text-base font-bold text-slate-700 capitalize">{itemKey}</Text>
+                      <Text className="text-base font-bold text-slate-700">{productLabel(itemKey)}</Text>
                     </View>
                     <View className="flex-row items-center gap-3">
                       <Pressable onPress={() => onAdjust(itemKey, -1)} className="h-9 w-9 bg-white border border-slate-200 rounded-lg items-center justify-center active:bg-slate-100">
                         <Minus size={16} color="#334155" />
                       </Pressable>
-                      <View className="items-center w-12">
-                        <Text className="text-xl font-black text-slate-800">{editedOrder[itemKey] || 0}</Text>
-                        {unit ? <Text className="text-[10px] font-bold text-slate-400 uppercase">{unit}</Text> : null}
+                      <View className="items-center w-20">
+                        <Text className="text-lg font-black text-slate-800">
+                          {formatQty(editedOrder[itemKey] || 0, itemKey)}
+                        </Text>
                       </View>
                       <Pressable onPress={() => onAdjust(itemKey, 1)} className="h-9 w-9 bg-white border border-slate-200 rounded-lg items-center justify-center active:bg-slate-100">
                         <Plus size={16} color="#334155" />
@@ -475,7 +653,7 @@ export default function DriverManifestScreen() {
       setDriverName(name);
       await api.post('/driver/sync', { name });
 
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = todayLocal();
 
       const [shift, mMan, eMan] = await Promise.allSettled([
         api.get('/driver/shift/today'),
@@ -523,10 +701,30 @@ export default function DriverManifestScreen() {
   // ------------------------------------------------------------------
 
   const startShift = async () => {
+    // Second check, because the disabled button is a rendered state and this
+    // is the action. A tap landing exactly as the window closes, or a stale
+    // render after the clock moved, would otherwise start a round the sweeper
+    // ends within five minutes — which looks like the app breaking.
+    const w = currentSlot === 'morning' ? morningWindow : eveningWindow;
+    if (!w.open) return;
+
     setBusy(true);
     try {
       const row = await api.post('/driver/shift/start', { slot: currentSlot });
       setShiftState((prev) => prev ? { ...prev, [currentSlot]: row } : prev);
+
+      // Refetch the manifest on start.
+      //
+      // The list is loaded when the app opens and on pull-to-refresh, nothing
+      // else. A driver who left the app open overnight would begin their round
+      // from a list fetched before the manifest locked — missing any override
+      // a customer set before the cutoff. Starting the shift is the moment
+      // they commit to a list, so it is the moment to make sure it is current.
+      //
+      // Also recovers the stops a restart brings back from UNATTEMPTED to
+      // PENDING, which the local state knows nothing about.
+      await loadEverything();
+
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
       setAlertConfig({ title: 'Could not start shift', message: err?.message || 'Try again.', confirmText: 'OK', showCancel: false, onConfirm: () => setAlertConfig(null) });
@@ -572,8 +770,11 @@ export default function DriverManifestScreen() {
     setDeliveryModalVisible(true);
   };
 
+  // delta is a direction (-1 or +1); the size comes from the product, so a
+  // driver moves in the same units the customer ordered in.
   const handleAdjust = (key: string, delta: number) => {
-    setEditedOrder((prev) => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) + delta) }));
+    const step = stepFor(key) * (delta < 0 ? -1 : 1);
+    setEditedOrder((prev) => ({ ...prev, [key]: Math.max(0, (prev[key] || 0) + step) }));
   };
 
   const confirmDelivery = () => {
@@ -629,7 +830,7 @@ export default function DriverManifestScreen() {
       customerId: stop.id,
       routeId: currentBucket.routeId,
       slot: currentSlot,
-      date: new Date().toISOString().split('T')[0],
+      date: todayLocal(),
       status: status as any,
       actualOrder: status === 'DELIVERED' ? actualOrder : undefined,
       driverLatitude: 0,
@@ -698,6 +899,14 @@ export default function DriverManifestScreen() {
   const morningActive = shiftState?.morning?.status === 'ACTIVE';
   const eveningActive = shiftState?.evening?.status === 'ACTIVE';
 
+  // Recomputed on every render rather than memoised: these depend on the wall
+  // clock, and a driver watching the screen at 01:59 should see the button
+  // enable at 02:00 without having to do anything. Renders are frequent
+  // enough here that the boundary is never far off.
+  const morningWindow = slotWindow('morning', shiftState?.cutoffs);
+  const eveningWindow = slotWindow('evening', shiftState?.cutoffs);
+  const currentWindow = currentSlot === 'morning' ? morningWindow : eveningWindow;
+
   // ------------------------------------------------------------------
   // Render
   // ------------------------------------------------------------------
@@ -753,6 +962,8 @@ export default function DriverManifestScreen() {
                 onChange={setCurrentSlot}
                 morningActive={morningActive}
                 eveningActive={eveningActive}
+                morningWindow={morningWindow}
+                eveningWindow={eveningWindow}
               />
 
               {/* Shift control */}
@@ -761,6 +972,7 @@ export default function DriverManifestScreen() {
                 slot={currentSlot}
                 busy={busy}
                 onStart={startShift}
+                window={currentWindow}
                 onEnd={endShift}
               />
 

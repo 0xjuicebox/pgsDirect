@@ -19,6 +19,7 @@ import {
 } from 'lucide-react-native';
 
 import { api } from '../../../utils/api';
+import { toLocalISODate } from '../../../utils/date';
 
 type Driver = {
   id: string;
@@ -109,7 +110,7 @@ export default function DriverDetailScreen() {
       const to = new Date();
       const from = new Date();
       from.setDate(from.getDate() - 14);
-      const fmt = (d: Date) => d.toISOString().split('T')[0];
+      const fmt = (d: Date) => toLocalISODate(d);
       const data = await api.get(
         `/delivery?driverId=${id}&from=${fmt(from)}&to=${fmt(to)}&page=1&limit=100`,
       );
